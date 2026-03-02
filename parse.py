@@ -9,6 +9,26 @@ The point of this project is to
 3. Find code flows that may involve shared resources among spawned threads
 '''
 
+# Subclass of ast.NodeVisitor to find specific function/method calls
+class function_call_finder(ast.NodeVisitor):
+   def __init__(self, target_name):
+      self.target_name = target_name
+      self.func_calls = []
+      self.method_calls = []
+   
+   def visit_Call(self, node):
+      if isinstance(node.func, ast.Name):
+         if node.func.id == self.target_name:
+            self.func_calls.append((node.lineno, node.col_offset))
+            
+      elif isinstance(node.func, ast.Attribute):
+         if node.func.attr == self.target_name:
+            self.method_calls.append((node.lineno, node.col_offset))
+            
+      # Traverse down the rest of the tree
+      self.generic_visit(node)
+      
+
 def build_ast_from_file(filepath: str):
    try:
       with open(filepath) as f:
@@ -25,8 +45,15 @@ def build_ast_from_file(filepath: str):
    
    return tree
 
-def print_tree(tree):
-   print(ast.dump(tree, indent=4))
+def print_thread_locations(tree):
+   if tree is None: 
+      return
+   
+   threadcutter = function_call_finder("start")
+   threadcutter.visit(tree)
+   
+   print(f"Visited function calls for {threadcutter.target_name}: {threadcutter.func_calls}")
+   print(f"Visited method calls for {threadcutter.target_name}: {threadcutter.method_calls}")
 
 # get_paths_from_repo
 # Returns a list of filepaths in a given repo spec for exclusively Python files
@@ -71,7 +98,7 @@ def main():
    if len(args) > 1:
       for file in range(1, len(args)):
          tree = build_ast_from_file(args[file])
-         print_tree(tree)
+         print_thread_locations(tree)
 
 if __name__ == "__main__":
    main()
