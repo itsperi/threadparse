@@ -13,8 +13,11 @@ The point of this project is to
 class function_call_finder(ast.NodeVisitor):
    def __init__(self, target_name):
       self.target_name = target_name
-      self.func_calls = []
-      self.method_calls = []
+      self.calls = {}
+      self.global_names = set()
+      self.nonlocal_names = set()
+      self.globals = []
+      self.nonlocals = []
    
    def visit_Call(self, node):
       # Calls can either be function or method calls
@@ -22,16 +25,29 @@ class function_call_finder(ast.NodeVisitor):
       # methods in the ast have ast.Attribute
       if isinstance(node.func, ast.Name):
          if node.func.id == self.target_name:
-            self.func_calls.append((node.lineno, node.col_offset))
+            self.calls[self.target_name] = node
             
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == self.target_name:
-            self.method_calls.append((node.lineno, node.col_offset))
+            self.calls[self.target_name] = node
             
       # Traverse down the rest of the tree
       # Since this function is a custom visit method,
       # we need to explicitly call generic_visit
       self.generic_visit(node)
+      
+   def visit_Assign(self, node):
+      pass
+      
+   def visit_Global(self, node):
+      for name in node.names:
+         self.global_names.add(name)
+      self.globals.append((node.lineno, node.col_offset))
+      
+   def visit_Nonlocal(self, node):
+      for name in node.names:
+         self.nonlocal_names.add(name)
+      self.nonlocals.append((node.lineno, node.col_offset))
       
 def print_locations(tree, target):
    if tree is None: 
@@ -40,8 +56,12 @@ def print_locations(tree, target):
    threadcutter = function_call_finder(target)
    threadcutter.visit(tree)
    
-   print(f"Visited function calls for {target}: {threadcutter.func_calls}")
-   print(f"Visited method calls for {target}: {threadcutter.method_calls}")
+   for func, node in threadcutter.calls.items():
+      print(f"Function:{func} at {node.lineno}, {node.col_offset}")
+   print(f"Set of globals: {threadcutter.global_names}")
+   print(f"Set of locals: {threadcutter.nonlocal_names}")
+   print(f"Visited globals: {threadcutter.globals}")
+   print(f"Visited nonlocals: {threadcutter.nonlocals}")
 
          
 def main():
