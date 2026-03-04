@@ -17,6 +17,9 @@ class function_call_finder(ast.NodeVisitor):
       self.method_calls = []
    
    def visit_Call(self, node):
+      # Calls can either be function or method calls
+      # functions in the ast have type ast.Name
+      # methods in the ast have ast.Attribute
       if isinstance(node.func, ast.Name):
          if node.func.id == self.target_name:
             self.func_calls.append((node.lineno, node.col_offset))
@@ -26,6 +29,8 @@ class function_call_finder(ast.NodeVisitor):
             self.method_calls.append((node.lineno, node.col_offset))
             
       # Traverse down the rest of the tree
+      # Since this function is a custom visit method,
+      # we need to explicitly call generic_visit
       self.generic_visit(node)
       
 def print_locations(tree, target):
