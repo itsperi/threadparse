@@ -1,17 +1,16 @@
 import ast
 from dataclasses import dataclass, field
-from collections import defaultdict
 
 @dataclass
 class ThreadTarget:
    name: str
    node: ast.AST
-   reads: set = field(default_factory=dict)
-   writes: set = field(default_factory=dict)
+   reads: dict[str, ast.AST] = field(default_factory=dict)
+   writes: dict[str, ast.AST] = field(default_factory=dict)
    
 class ProgramModel:
    def __init__(self):
-      self.functions = {}
-      self.globals = {}
-      self.nonlocals = {}
-      self.thread_targets = []
+      self.functions : dict[str, ast.AST] = {}
+      self.globals : dict[str, ast.AST] = {}
+      self.nonlocals : dict[str, ast.AST] = {}
+      self.thread_targets : list[ThreadTarget]= []

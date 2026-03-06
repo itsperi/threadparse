@@ -1,8 +1,7 @@
 import ast
 import sys
 import gitutils
-from collections import defaultdict
-from passes import SymbolPass, ThreadPass, TargetPass, CriticalPass
+from passes import SymbolPass, ThreadPass, TargetUpdate, CriticalPass
 from model import ProgramModel
 '''
 The point of this project is to 
@@ -89,18 +88,15 @@ class Analyzer:
       
    def run(self):
       SymbolPass(self.model).visit(self.tree)
-      # print(self.model)
       ThreadPass(self.model).visit(self.tree)
-      # print(self.model.__dict__)
-      TargetPass(self.model).visit(self.tree)
-      # print(self.model)
+      TargetUpdate(self.model).update()
       CriticalPass(self.model).analyze()
             
 def main():
    args = sys.argv
    if len(args) > 1:
       for file in range(1, len(args)):
-         tree = gitutils.build_ast_from_file(args[file])
+         tree: ast.Module = gitutils.build_ast_from_file(args[file])
          threadcutter = Analyzer(tree)
          threadcutter.run()
          # print_locations(tree)

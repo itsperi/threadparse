@@ -1,5 +1,6 @@
 import ast
 from model import ThreadTarget
+from collections import defaultdict
 
 # Custom NodeVisitor that enables parent tracking for upwards recursion
 class PCNodeVisitor(ast.NodeVisitor):
@@ -35,7 +36,7 @@ class ThreadPass(PCNodeVisitor):
          if node.func.id == "Thread":
             for kw in node.keywords:
                if kw.arg == "target":
-                  name = self.get_target(kw.value)
+                  name : str | None = self.get_target(kw.value)
                   if name:
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
@@ -55,66 +56,69 @@ class ThreadPass(PCNodeVisitor):
                      
    def get_target(self, node):
       if isinstance(node, (ast.Name, ast.Attribute)):
-         match node.__class__:
-            case ast.Name:
-               return node.id
-            case ast.Attribute:
-               return node.attr
+         if isinstance(node, ast.Name):
+            return node.id
+         if isinstance(node, ast.Attribute):
+            return node.attr
       return None
    
 class TargetPass(PCNodeVisitor):
-   def __init__(self, model):
-      self.reads = set()
-      self.writes = set()
-      self.model = model
+   def __init__(self):
+      self.reads = defaultdict(list)
+      self.writes = defaultdict(list)
       
    # For reads/writes within thread targets
    def visit_Name(self, node):
       if isinstance(node.ctx, (ast.Load, ast.Store)):
-         match node.ctx:
-            case ast.Load:
-               self.reads.add(node.id)
-            case ast.Store:
-               self.writes.add(node.id)
+         if isinstance(node.ctx, ast.Load):
+            self.reads[node.id].append(node)
+         if isinstance(node.ctx, ast.Store):
+            self.writes[node.id].append(node)
       self.generic_visit(node)
    
    # For shorthand exprs like x += 1
    def visit_AugAssign(self, node):
       if isinstance(node.target, ast.Name):
-         self.writes.add(node.target.id)
+         self.writes[node.target.id].append(node)
       self.generic_visit(node)     
+      
+   # For attribute accesses like class.x
+   def visit_Attribute(self, node):
+      if isinstance(node.ctx, ast.Load):
+         self.reads[node.attr].append(node)
+      elif isinstance(node.ctx, ast.Store):
+         self.writes[node.attr].append(node)
+      self.generic_visit(node)
 
+class TargetUpdate:
+   def __init__(self, model):
+      self.model = model
+      
    def update(self):
       for target in self.model.thread_targets:
-         if target.name in self.model.functions:
-            target_node = self.model.functions[target.name]
-            
-            parser = TargetPass()
-            parser.visit(target_node)
-            
-            target.reads = parser.reads
-            target.writes = parser.writes
+         target_node = self.model.functions[target.name]
+         
+         parser = TargetPass()
+         parser.visit(target_node)
+         
+         target.reads = parser.reads
+         target.writes = parser.writes
             
 class CriticalPass:
    def __init__(self, model):
       self.model = model
       
    def analyze(self):
-      globals = self.model.globals
-      nonlocals = self.model.nonlocals
+      g_vars = set(self.model.globals.keys())
+      nl_vars = set(self.model.nonlocals.keys())
       
       for target in self.model.thread_targets:
-         print(target)
-         shared_reads = target.reads
-         shared_writes = target.writes
+         shared_reads = set(target.reads.keys() & (g_vars | nl_vars))
+         shared_writes = set(target.writes.keys() & (g_vars | nl_vars))
 
          if shared_reads or shared_writes:
             print(f"\nThread routine: {target.name}")
-
             if shared_reads:
                print("  Reads shared variables:", shared_reads)
-
             if shared_writes:
                print("  Writes shared variables:", shared_writes)
-
-            print("  WARNING: potential shared state access")
