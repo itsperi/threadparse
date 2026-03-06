@@ -6,12 +6,12 @@ from collections import defaultdict
 class ThreadTarget:
    name: str
    node: ast.AST
-   reads = field(default_factory=set)
-   writes = field(default_factory=set)
+   reads: set = field(default_factory=dict)
+   writes: set = field(default_factory=dict)
    
 class ProgramModel:
    def __init__(self):
-      self.functions = defaultdict[list]
-      self.globals = defaultdict[list]
-      self.nonlocals = defaultdict[list]
+      self.functions = {}
+      self.globals = {}
+      self.nonlocals = {}
       self.thread_targets = []
