@@ -11,4 +11,3 @@ def worker():
 for _ in range(100):
    t = threading.Thread(target=worker)
    t.start()
-   
