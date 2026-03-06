@@ -63,10 +63,6 @@ class TParser(PCNodeVisitor):
       # MUST NOT BE SUPER()
       self.visit(node)
       
-   # This pass is meant to detect whether all the detected
-   # thread targets  
-   def second_pass(self, node):
-      pass
       
 def print_locations(tree):
    if tree is None: 
