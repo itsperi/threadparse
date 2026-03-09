@@ -77,10 +77,10 @@ class TargetPass(PCNodeVisitor):
       self.generic_visit(node)
    
    # For shorthand exprs like x += 1
-   def visit_AugAssign(self, node):
-      if isinstance(node.target, ast.Name):
-         self.writes[node.target.id].append(node)
-      self.generic_visit(node)     
+   # def visit_AugAssign(self, node):
+   #    if isinstance(node.target, ast.Name):
+   #       self.writes[node.target.id].append(node)
+   #    self.generic_visit(node)     
       
    # For attribute accesses like class.x
    def visit_Attribute(self, node):
@@ -94,7 +94,7 @@ class TargetUpdate:
    def __init__(self, model):
       self.model = model
       
-   def update(self):
+   def update_thread_accesses(self):
       for target in self.model.thread_targets:
          target_node = self.model.functions[target.name]
          
@@ -108,7 +108,33 @@ class CriticalPass:
    def __init__(self, model):
       self.model = model
       
-   def analyze(self):
+   def is_with_locking(self, node):
+      locks = ("lock", "acquire")
+      for item in node.items:
+         ctx = item.context_expr
+         
+         if isinstance(ctx, ast.Name):
+            for lock in locks:
+               if lock in ctx.id.lower():
+                  return True
+                  
+         if isinstance(ctx, ast.Attribute):
+            for lock in locks:
+               if lock in ctx.attr.lower():
+                  return True
+                  
+      return False
+      
+   def is_inside_with(self, node):
+      current = node
+      while hasattr(current, "parent") and current.parent:
+         if isinstance(current.parent, ast.With):
+            if self.is_with_locking(current.parent):
+               return True
+         current = current.parent
+      return False     
+   
+   def analyze_shared_vars(self):
       g_vars = set(self.model.globals.keys())
       nl_vars = set(self.model.nonlocals.keys())
       
@@ -119,6 +145,25 @@ class CriticalPass:
          if shared_reads or shared_writes:
             print(f"\nThread routine: {target.name}")
             if shared_reads:
-               print("  Reads shared variables:", shared_reads)
+               print("   Reads shared variables:", shared_reads)
             if shared_writes:
-               print("  Writes shared variables:", shared_writes)
+               print("   Writes shared variables:", shared_writes)
+            
+            found_bad_var = False
+            for var, nodes in target.writes.items():
+               for node in nodes:
+                  if not self.is_inside_with(node) and var in shared_writes:
+                        found_bad_var = True
+                        print(f"      Unprotected write of {var} in line {node.lineno}")   
+   
+            if not found_bad_var:
+               print("      No unprotected variables detected")
+   
+   # def verify_protected_access(self):
+   #    for target in self.model.thread_targets:
+   #       for var, nodes in target.writes.items():
+   #          for node in nodes:
+   #             if not self.is_inside_with(node):
+   #                print(f"Unprotected write of {var} in line {node.lineno}")
+                  
+         
