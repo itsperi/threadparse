@@ -77,10 +77,11 @@ class TargetPass(PCNodeVisitor):
       self.generic_visit(node)
    
    # For shorthand exprs like x += 1
-   # def visit_AugAssign(self, node):
-   #    if isinstance(node.target, ast.Name):
-   #       self.writes[node.target.id].append(node)
-   #    self.generic_visit(node)     
+   def visit_AugAssign(self, node):
+      if isinstance(node.target, ast.Name):
+         self.reads[node.target.id].append(node)
+         self.writes[node.target.id].append(node)
+      self.generic_visit(node)     
       
    # For attribute accesses like class.x
    def visit_Attribute(self, node):
@@ -134,6 +135,71 @@ class CriticalPass:
          current = current.parent
       return False     
    
+   def is_lock_call(self, node):
+      if not isinstance(node, ast.Expr):
+         return False
+
+      call = node.value
+      if not isinstance(call, ast.Call):
+         return False
+
+      if isinstance(call.func, ast.Attribute):
+         return call.func.attr.lower() in ("lock", "acquire")
+
+      return False
+
+   def is_unlock_call(self, node):
+      if not isinstance(node, ast.Expr):
+         return False
+
+      call = node.value
+      if not isinstance(call, ast.Call):
+         return False
+
+      if isinstance(call.func, ast.Attribute):
+         return call.func.attr.lower() in ("unlock", "release")
+
+      return False
+   
+   def get_parent_statement(self, node):
+      current = node
+      while current and not isinstance(current, ast.stmt):
+         current = getattr(current, "parent", None)
+      return current
+   
+   def is_between_lock_unlock(self, node):
+      stmt = self.get_parent_statement(node)
+
+      parent = stmt.parent
+      if not hasattr(parent, "body"):
+         return False
+
+      body = parent.body
+      if stmt not in body:
+         return False
+      idx = body.index(stmt)
+      lock_found = False
+
+      # search backwards for lock
+      for i in range(idx - 1, -1, -1):
+         if self.is_unlock_call(body[i]):
+            break
+         if self.is_lock_call(body[i]):
+            lock_found = True
+            break
+
+      if not lock_found:
+         return False
+
+      # search forward for unlock
+      for i in range(idx + 1, len(body)):
+         if self.is_lock_call(body[i]):
+            break
+         if self.is_unlock_call(body[i]):
+            return True
+
+      return False
+   
    def analyze_shared_vars(self):
       g_vars = set(self.model.globals.keys())
       nl_vars = set(self.model.nonlocals.keys())
@@ -152,7 +218,7 @@ class CriticalPass:
             found_bad_var = False
             for var, nodes in target.writes.items():
                for node in nodes:
-                  if not self.is_inside_with(node) and var in shared_writes:
+                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)) and var in shared_writes:
                         found_bad_var = True
                         print(f"      Unprotected write of {var} in line {node.lineno}")   
    
