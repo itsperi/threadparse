@@ -227,12 +227,6 @@ class CriticalPass:
    
             if not found_bad_var:
                print("      No unprotected variables detected")
-   
-   # def verify_protected_access(self):
-   #    for target in self.model.thread_targets:
-   #       for var, nodes in target.writes.items():
-   #          for node in nodes:
-   #             if not self.is_inside_with(node):
-   #                print(f"Unprotected write of {var} in line {node.lineno}")
+
                   
          
