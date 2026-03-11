@@ -37,20 +37,22 @@ class ThreadPass(PCNodeVisitor):
             for kw in node.keywords:
                if kw.arg == "target":
                   name : str | None = self.get_target(kw.value)
-                  if name:
+                  if name and name not in self.model.seen_targets:
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
-                     print(f"Found thread target: {target.name}")
+                     self.model.seen_targets.add(name)
+                     print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
 
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
                if kw.arg == "target":
                   name = self.get_target(kw.value)
-                  if name:
+                  if name and name not in self.model.seen_targets:
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
-                     print(f"Found thread target: {target.name}")
+                     self.model.seen_targets.add(name)
+                     print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
                      
       self.generic_visit(node)
                      
@@ -81,7 +83,8 @@ class TargetPass(PCNodeVisitor):
       if isinstance(node.target, ast.Name):
          self.reads[node.target.id].append(node)
          self.writes[node.target.id].append(node)
-      self.generic_visit(node)     
+      # Don't call generic_visit, we'll double count
+      # self.generic_visit(node)     
       
    # For attribute accesses like class.x
    def visit_Attribute(self, node):

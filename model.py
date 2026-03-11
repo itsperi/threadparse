@@ -14,3 +14,4 @@ class ProgramModel:
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
       self.thread_targets : list[ThreadTarget]= []
+      self.seen_targets: set = set()
