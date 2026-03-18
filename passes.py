@@ -2,13 +2,20 @@ import ast
 from model import ThreadTarget, Scope
 from collections import defaultdict
 
-# Custom NodeVisitor that enables parent tracking for upwards recursion
+'''
+Custom NodeVisitor that enables parent tracking for upwards recursion
+'''
 class PCNodeVisitor(ast.NodeVisitor):
     def generic_visit(self, node):
         for child in ast.iter_child_nodes(node):
             child.parent = node
             self.visit(child)
             
+'''
+This pass of the AST is meant to gather the names and locations
+of global, nonlocal variables and function definitions to later 
+use as potential pieces of interest in threads
+'''
 class SymbolPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
@@ -27,6 +34,11 @@ class SymbolPass(PCNodeVisitor):
          self.model.nonlocals[name] = node
       self.generic_visit(node)
       
+'''
+This pass of the AST is meant to go over the function
+definitions, variable writes in each function/scope
+and define the stack scope for each
+'''
 class ScopePass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
@@ -63,6 +75,11 @@ class ScopePass(PCNodeVisitor):
       if scope:
          scope.nonlocals.update(node.names)
          
+'''
+This pass of the AST is meant to gather 
+info about which functions are designated 
+as Thread targets and saves their nodes for later use
+'''
 class ThreadPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
@@ -77,7 +94,7 @@ class ThreadPass(PCNodeVisitor):
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
                      self.model.seen_targets.add(name)
-                     print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
+                     # print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
 
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
@@ -88,7 +105,7 @@ class ThreadPass(PCNodeVisitor):
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
                      self.model.seen_targets.add(name)
-                     print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
+                     # print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
                      
       self.generic_visit(node)
                      
@@ -105,6 +122,12 @@ MUTATING_METHODS = {
    "pop", "clear", "update", "add", "discard"
 }
 
+'''
+This pass of the AST is meant to target specifically the 
+functions designated as Thread targets and gather information
+about the variable reads, writes, function calls with 
+potential side effects, and subscript/attribute accesses 
+'''
 class TargetPass(PCNodeVisitor):
    def __init__(self):
       self.reads = defaultdict(list)
@@ -175,6 +198,11 @@ class TargetPass(PCNodeVisitor):
             self.writes[node.value.id].append(node)
       self.generic_visit(node)
 
+
+'''
+This class is meant to update the program model
+with the relevant data collected from the thread pass
+'''
 class TargetUpdate:
    def __init__(self, model):
       self.model = model
@@ -191,6 +219,11 @@ class TargetUpdate:
          target.reads = parser.reads
          target.writes = parser.writes
             
+'''
+This pass of the AST is meant to go over the thread targets
+identified earlier along with their state and detect any
+behavior that may be considered thread-unsafe
+'''
 class CriticalPass:
    def __init__(self, model):
       self.model = model

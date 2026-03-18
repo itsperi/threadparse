@@ -12,6 +12,11 @@ pattern = re.compile(
 def uses_threading(code: str) -> bool:
    return bool(pattern.search(code))
 
+'''
+Opens the file given as the filepath
+and returns the resultant AST only 
+if it contains the threading library
+'''
 def build_ast_from_filepath(filepath: str):
    try:
       with open(filepath) as f:
@@ -32,6 +37,11 @@ def build_ast_from_filepath(filepath: str):
    
    return tree
 
+'''
+Parses the given file string
+and returns the resultant AST only 
+if it contains the threading library
+'''
 def build_ast_from_program(filepath: str, file: str):
    try:
       if uses_threading(file):
@@ -45,10 +55,11 @@ def build_ast_from_program(filepath: str, file: str):
    
    return tree
 
-# get_pytext_in_dir
-# Returns a list of Python file contents from a local directory
-# Input: dir - a directory in the root project folder, or absolute path to one
-# Output: filepaths - a list of paths to python files for parsing
+'''
+Returns a list of Python file contents from a local directory
+Input: dir - a directory in the root project folder, or absolute path to one
+Output: filepaths - a list of paths to python files for parsing
+'''
 def get_filepaths_in_dir(dir):
    return [str(p) for p in Path(dir).rglob("*.py")]
 
@@ -88,10 +99,10 @@ class GitHubPyGrab:
 
       return files
 
+   """
+   Returns dictionary: {filepath: file contents}
+   """
    def fetch_all(self):
-      """
-      Returns dictionary: {filepath: file contents}
-      """
       py_files = self._collect_py_files()
       result = {}
 
