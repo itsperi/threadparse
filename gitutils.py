@@ -29,7 +29,7 @@ def build_ast_from_filepath(filepath: str):
       if uses_threading(program):
          tree = ast.parse(program)
       else:
-         print(f"No threading usage detected\n")
+         # print(f"No threading usage detected\n")
          return None
    except Exception as e:
       print(f"There was an error parsing <{filepath}> into an AST: {e}\n")
@@ -47,7 +47,7 @@ def build_ast_from_program(filepath: str, file: str):
       if uses_threading(file):
          tree = ast.parse(file)
       else:
-         print(f"No threading usage detected\n")
+         # print(f"No threading usage detected\n")
          return None
    except Exception as e:
       print(f"There was an error parsing <{filepath}> into an AST: {e}\n")

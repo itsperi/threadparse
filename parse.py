@@ -10,6 +10,14 @@ The point of this project is to
 3. Find code flows that may involve shared resources among spawned threads
 '''
 
+
+'''
+An instance of an Analyzer makes multiple
+AST passes on a program and stores relevant
+info within a program model that is updated
+for each pass done. Any relevant details are
+printed within each stage.
+'''
 class Analyzer:
    def __init__(self, tree):
       self.tree = tree
@@ -22,6 +30,10 @@ class Analyzer:
       TargetUpdate(self.model).update_thread_accesses()
       CriticalPass(self.model).analyze_shared_vars()
             
+'''
+Takes a list of filepaths (namely ones that lead
+to files/*.py) and runs an analysis on each
+'''
 def parse_files(paths: list[str]):
    for path in paths:
          print(f"Parsing {path}...")
@@ -32,21 +44,31 @@ def parse_files(paths: list[str]):
          threadcutter.run()
          print("---------------------")
 
-def parse_repos():
-   with open("repos.txt", "r") as repos:
-      for url in repos.readlines():
-         repo = util.GitHubPyGrab(url)
-         files: dict[str, str] = repo.fetch_all()
-         print(f"{len(files)} file(s) found in {url}")
-         for path, program in files.items():
-            print(f"Parsing {path}...")
-            tree = util.build_ast_from_program(path, program)
-            if not tree:
-               continue
-            threadcutter = Analyzer(tree)
-            threadcutter.run()
-            print("---------------------")
+'''
+Takes the repo urls from repos.txt, 
+grabs contents using HTTP requests,
+and runs an analysis on each .py file in the repo
+'''
+# def parse_repos():
+#    with open("repos.txt", "r") as repos:
+#       for url in repos.readlines():
+#          repo = util.GitHubPyGrab(url)
+#          files: dict[str, str] = repo.fetch_all()
+#          print(f"{len(files)} file(s) found in {url}")
+#          for path, program in files.items():
+#             print(f"Parsing {path}...")
+#             tree = util.build_ast_from_program(path, program)
+#             if not tree:
+#                continue
+#             threadcutter = Analyzer(tree)
+#             threadcutter.run()
+#             print("---------------------")
             
+'''
+Command line arguments tell how to run analyses
+whether thru local downloads, repo pulling, or 
+manual file naming within the project directory
+'''
 def main():
    args = sys.argv
    if len(args) > 1:

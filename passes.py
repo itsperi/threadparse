@@ -42,11 +42,16 @@ and define the stack scope for each
 class ScopePass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
-      self.scope_stack = []
+      self.scope_stack: list[Scope] = []
 
    def current_scope(self):
       return self.scope_stack[-1] if self.scope_stack else None
 
+   '''
+   Whenever we enter a function definition, we create a new scope
+   and add the parameters as local variables. When we exit, we pop the scope
+   and save it in the program model for later use.
+   '''
    def visit_FunctionDef(self, node):
       scope = Scope(parent=self.current_scope())
       self.scope_stack.append(scope)
@@ -133,6 +138,7 @@ class TargetPass(PCNodeVisitor):
    def __init__(self):
       self.reads = defaultdict(list)
       self.writes = defaultdict(list)
+      self.calls = defaultdict(list)
       
    # For attribute accesses, we need to 
    # extract the entire chain: class.list.append()
@@ -152,18 +158,45 @@ class TargetPass(PCNodeVisitor):
       
    # For reads/writes within thread targets
    def visit_Name(self, node):
-      if isinstance(node.ctx, (ast.Load, ast.Store)):
-         if isinstance(node.ctx, ast.Load):
-            self.reads[node.id].append(node)
-         if isinstance(node.ctx, ast.Store):
-            self.writes[node.id].append(node)
-      self.generic_visit(node)
+      # Let's avoid double counting
+      parent = getattr(node, "parent", None)
+
+      # If this Name is part of ANY attribute chain, ignore it
+      if isinstance(parent, ast.Attribute) and parent.value is node:
+         return
+
+      # If this Name is part of a call (foo()), ignore it
+      if isinstance(parent, ast.Call) and parent.func is node:
+         return
+
+      # Otherwise only standalone variables count
+      if isinstance(node.ctx, ast.Load):
+         self.reads[node.id].append(node)
+      elif isinstance(node.ctx, ast.Store):
+         self.writes[node.id].append(node)
    
    # For shorthand exprs like x += 1
    def visit_AugAssign(self, node):
-      if isinstance(node.target, ast.Name):
-         self.reads[node.target.id].append(node)
-         self.writes[node.target.id].append(node)
+      target = node.target
+
+      # Case 1: simple variable (x += 1)
+      if isinstance(target, ast.Name):
+         self.reads[target.id].append(node)
+         self.writes[target.id].append(node)
+
+      # Case 2: attribute (self.x += 1)
+      elif isinstance(target, ast.Attribute):
+         full_name = self.get_full_attr_name(target)
+         if full_name:
+               self.reads[full_name].append(node)
+               self.writes[full_name].append(node)
+
+      # Case 3: subscript (arr[i] += 1)
+      elif isinstance(target, ast.Subscript):
+         if isinstance(target.value, ast.Name):
+               self.reads[target.value.id].append(node)
+               self.writes[target.value.id].append(node)
+               
       # Don't call generic_visit, we'll double count
       # self.generic_visit(node)     
       
@@ -172,6 +205,10 @@ class TargetPass(PCNodeVisitor):
       full_name = self.get_full_attr_name(node)
 
       if full_name:
+         # If this attribute is part of a Call, classify ONLY as call, not read
+         if isinstance(node.parent, ast.Call) and node.parent.func is node:
+               return
+
          if isinstance(node.ctx, ast.Load):
             self.reads[full_name].append(node)
          elif isinstance(node.ctx, ast.Store):
@@ -182,13 +219,23 @@ class TargetPass(PCNodeVisitor):
    # For method calls that may be
    # mutating a shared data structure
    def visit_Call(self, node):
-      if isinstance(node.func, ast.Attribute):
+      func_name = None
+      # Case 1: func()
+      if isinstance(node.func, ast.Name):
+         func_name = node.func.id
+
+      # Case 2: obj.method()
+      elif isinstance(node.func, ast.Attribute):
+         func_name = self.get_full_attr_name(node.func)
          method = node.func.attr
          obj = node.func.value
 
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                self.writes[obj.id].append(node)
+
+      if func_name:
+         self.calls[func_name].append(node)
 
       self.generic_visit(node)
       
@@ -209,8 +256,8 @@ class TargetUpdate:
       self.model = model
       
    def update_thread_accesses(self):
-      if not self.model.thread_targets:
-         print("No thread targets found...")
+      # if not self.model.thread_targets:
+         # print("No thread targets found...")
       for target in self.model.thread_targets:
          target_node = self.model.functions[target.name]
          
@@ -219,6 +266,7 @@ class TargetUpdate:
          
          target.reads = parser.reads
          target.writes = parser.writes
+         target.calls = parser.calls
             
 '''
 This pass of the AST is meant to go over the thread targets
@@ -357,26 +405,49 @@ class CriticalPass:
             if self.is_external(var, scope)
          }
          
-         if shared_reads or shared_writes:
+         unprotected_calls = {
+            func for func in target.calls
+         }
+         
+         if shared_reads or shared_writes or unprotected_calls:
             print(f"\nThread routine: {target.name}")
             if shared_reads:
                print("   Reads shared variables:", shared_reads)
             if shared_writes:
                print("   Writes shared variables:", shared_writes)
+            if unprotected_calls:
+               print("   Calls functions:", unprotected_calls)
             
             found_bad_var = False
-            for var, nodes in target.writes.items():
+            found_bad_call = False
+
+            for var, nodes in target.reads.items():
                for node in nodes:
                   if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
                      if var in shared_reads:
                         found_bad_var = True
                         print(f"      Unprotected read  of {var} in line {node.lineno}")   
+
+            for var, nodes in target.writes.items():
+               for node in nodes:
+                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):  
                      if var in shared_writes:
                         found_bad_var = True
                         print(f"      Unprotected write of {var} in line {node.lineno}")   
    
+            for func, nodes in target.calls.items():
+               for node in nodes:
+                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
+                     if func in unprotected_calls:
+                        print(f"      Unprotected call  to {func} in line {node.lineno}")
+                        found_bad_call = True
+
             if not found_bad_var:
                print("      No unprotected variables detected")
+            
+            if not found_bad_call:
+               print("      No unprotected function calls detected")
+               
          else:
             print(f"\n Thread routine: {target.name}")
             print(f"   No shared variables detected")
