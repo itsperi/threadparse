@@ -63,7 +63,8 @@ class ScopePass(PCNodeVisitor):
    def visit_Name(self, node):
       scope = self.current_scope()
       if scope and isinstance(node.ctx, ast.Store):
-         scope.locals.add(node.id)
+         if node.id not in scope.globals:
+            scope.locals.add(node.id)
 
    def visit_Global(self, node):
       scope = self.current_scope()
@@ -366,7 +367,11 @@ class CriticalPass:
             found_bad_var = False
             for var, nodes in target.writes.items():
                for node in nodes:
-                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)) and var in shared_writes:
+                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
+                     if var in shared_reads:
+                        found_bad_var = True
+                        print(f"      Unprotected read  of {var} in line {node.lineno}")   
+                     if var in shared_writes:
                         found_bad_var = True
                         print(f"      Unprotected write of {var} in line {node.lineno}")   
    
