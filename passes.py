@@ -223,6 +223,8 @@ class TargetPass(PCNodeVisitor):
       # Case 1: func()
       if isinstance(node.func, ast.Name):
          func_name = node.func.id
+         if func_name in MUTATING_METHODS:
+            self.writes[func_name].append(node)
 
       # Case 2: obj.method()
       elif isinstance(node.func, ast.Attribute):
@@ -233,9 +235,6 @@ class TargetPass(PCNodeVisitor):
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                self.writes[obj.id].append(node)
-
-      if func_name:
-         self.calls[func_name].append(node)
 
       self.generic_visit(node)
       
@@ -389,6 +388,8 @@ class CriticalPass:
       # g_vars = set(self.model.globals.keys())
       # nl_vars = set(self.model.nonlocals.keys())
       
+      print(f"\nAnalyzing program: {self.model.name}")
+      
       for target in self.model.thread_targets:
          scope = self.model.function_scopes[target.name]
          
@@ -411,8 +412,8 @@ class CriticalPass:
          
          if shared_reads or shared_writes or unprotected_calls:
             print(f"\nThread routine: {target.name}")
-            if shared_reads:
-               print("   Reads shared variables:", shared_reads)
+            # if shared_reads:
+            #    print("   Reads shared variables:", shared_reads)
             if shared_writes:
                print("   Writes shared variables:", shared_writes)
             if unprotected_calls:
@@ -421,12 +422,12 @@ class CriticalPass:
             found_bad_var = False
             found_bad_call = False
 
-            for var, nodes in target.reads.items():
-               for node in nodes:
-                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
-                     if var in shared_reads:
-                        found_bad_var = True
-                        print(f"      Unprotected read  of {var} in line {node.lineno}")   
+            # for var, nodes in target.reads.items():
+            #    for node in nodes:
+            #       if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
+            #          if var in shared_reads:
+            #             found_bad_var = True
+            #             print(f"      Unprotected read  of {var} in line {node.lineno}")   
 
             for var, nodes in target.writes.items():
                for node in nodes:

@@ -19,9 +19,9 @@ for each pass done. Any relevant details are
 printed within each stage.
 '''
 class Analyzer:
-   def __init__(self, tree):
+   def __init__(self, tree, name=""):
       self.tree = tree
-      self.model = ProgramModel()
+      self.model = ProgramModel(name=name)
       
    def run(self):
       SymbolPass(self.model).visit(self.tree)
@@ -36,13 +36,13 @@ to files/*.py) and runs an analysis on each
 '''
 def parse_files(paths: list[str]):
    for path in paths:
-         print(f"Parsing {path}...")
+         # print(f"Parsing {path}...")
          tree = util.build_ast_from_filepath(path)
          if not tree:
             continue
-         threadcutter = Analyzer(tree)
+         threadcutter = Analyzer(tree, name=path)
          threadcutter.run()
-         print("---------------------")
+         # print("---------------------")
 
 '''
 Takes the repo urls from repos.txt, 
@@ -77,9 +77,9 @@ def main():
          files = util.get_filepaths_in_dir("files")
          parse_files(files)
             
-      elif "--repos" in args or "-r" in args:
-         print("Reading files from repos in repos.txt...")
-         parse_repos()
+      # elif "--repos" in args or "-r" in args:
+      #    print("Reading files from repos in repos.txt...")
+      #    parse_repos()
                   
       else:
          files = args[1:]

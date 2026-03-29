@@ -22,7 +22,7 @@ def build_ast_from_filepath(filepath: str):
       with open(filepath) as f:
          program = f.read()
    except FileNotFoundError:
-      print(f"The given file <{filepath}> doesn't exist\n")
+      print(f"\nThe given file <{filepath}> doesn't exist\n")
       return None
    
    try:
@@ -32,7 +32,7 @@ def build_ast_from_filepath(filepath: str):
          # print(f"No threading usage detected\n")
          return None
    except Exception as e:
-      print(f"There was an error parsing <{filepath}> into an AST: {e}\n")
+      print(f"\nThere was an error parsing <{filepath}> into an AST: {e}\n")
       return None
    
    return tree

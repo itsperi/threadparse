@@ -16,7 +16,8 @@ class Scope:
       self.nonlocals = set()
    
 class ProgramModel:
-   def __init__(self):
+   def __init__(self, name=""):
+      self.name: str = name
       self.functions : dict[str, ast.AST] = {}
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
