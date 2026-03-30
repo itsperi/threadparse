@@ -29,21 +29,39 @@ class Analyzer:
       ThreadPass(self.model).visit(self.tree)
       TargetUpdate(self.model).update_thread_accesses()
       SharedUpdate(self.model).update_shared_vars()
-      CriticalPass(self.model).analyze_shared_vars()
+      result = CriticalPass(self.model).analyze_shared_vars()
+
+      return {
+         "name": self.model.name,
+         "unsafe": result is not None and result.get("unsafe", False) if isinstance(result, dict) else bool(result),
+      }
             
 '''
 Takes a list of filepaths (namely ones that lead
 to files/*.py) and runs an analysis on each
 '''
 def parse_files(paths: list[str]):
+   unsafe_files = []
+
    for path in paths:
-         # print(f"Parsing {path}...")
-         tree = util.build_ast_from_filepath(path)
-         if not tree:
-            continue
-         threadcutter = Analyzer(tree, name=path)
-         threadcutter.run()
-         # print("---------------------")
+      tree = util.build_ast_from_filepath(path)
+      if not tree:
+         continue
+
+      analyzer = Analyzer(tree, name=path)
+      result = analyzer.run()
+
+      if result["unsafe"]:
+         unsafe_files.append(path)
+
+   print("\n====================")
+   
+   if unsafe_files:
+      print("Unsafe threading detected in:")
+      for f in unsafe_files:
+         print(f" - {f}")
+   else:
+      print("No unsafe threading detected.")
 
 '''
 Takes the repo urls from repos.txt, 

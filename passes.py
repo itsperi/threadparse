@@ -467,18 +467,6 @@ class CriticalPass:
    def _get_unprotected_calls(self, target):
       return {func for func in target.calls}
    
-   def _analyze_calls(self, target, unprotected_calls):
-      found_bad_call = False
-
-      for func, nodes in target.calls.items():
-         for node in nodes:
-               if not self._is_protected(node):
-                  if func in unprotected_calls:
-                     print(f"      Unprotected call  to {func} in line {node.lineno}")
-                     found_bad_call = True
-
-      return found_bad_call
-   
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
       print(f"\nThread routine: {target.name}")
       
@@ -511,6 +499,18 @@ class CriticalPass:
    def _print_no_shared(self, target):
       print(f"\n Thread routine: {target.name}")
       print(f"   No shared variables detected")
+
+   def _analyze_calls(self, target, unprotected_calls):
+      found_bad_call = False
+
+      for func, nodes in target.calls.items():
+         for node in nodes:
+               if not self._is_protected(node):
+                  if func in unprotected_calls:
+                     print(f"      Unprotected call  to {func} in line {node.lineno}")
+                     found_bad_call = True
+
+      return found_bad_call
          
    def _analyze_shared_variables(self, target, shared_reads, shared_writes):
       found_bad_var = False
@@ -530,7 +530,9 @@ class CriticalPass:
          self._print_other_threads(var, target.name, readers, writers)
 
       for var in shared_writes:
-         shared_info = self.model.shared_vars.get(var, {"reads": {}, "writes": {}})
+         shared_info = self.model.shared_vars.get(var)
+         if not shared_info:
+            continue
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
@@ -538,11 +540,10 @@ class CriticalPass:
                for node in writers[target.name]:
                   if not self._is_protected(node):
                      found_bad_var = True
-                     print(f"      Unprotected read of {var} in line {node.lineno}")
+                     print(f"      Unprotected write of {var} in line {node.lineno}")
 
                self._print_other_threads(var, target.name, readers, writers)
 
-         # Writes
          if target.name in writers:
                for node in writers[target.name]:
                   if not self._is_protected(node):
@@ -574,7 +575,14 @@ class CriticalPass:
                
                if not found_bad_call:
                   print("      No unprotected function calls detected")
+                  
+               return {
+                  "unsafe": found_bad_var or found_bad_call
+               }  
          else:
                self._print_no_shared(target)
+               return {
+                  "unsafe": False
+               }
                   
          
