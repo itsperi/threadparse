@@ -1,5 +1,4 @@
 /files
 test.py
-*.pyc
 __pycache__/
 results.txt

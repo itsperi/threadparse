@@ -518,7 +518,12 @@ class CriticalPass:
       for var in shared_reads:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
+            for node in target.reads.get(var, []):
+               if not self._is_protected(node):
+                  found_bad_var = True
+                  print(f"      Unprotected read of {var} in line {node.lineno}")
             continue
+                  
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
@@ -532,7 +537,12 @@ class CriticalPass:
       for var in shared_writes:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
+            for node in target.writes.get(var, []):
+               if not self._is_protected(node):
+                  found_bad_var = True
+                  print(f"      Unprotected write of {var} in line {node.lineno}")
             continue
+                  
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
@@ -543,15 +553,7 @@ class CriticalPass:
                      print(f"      Unprotected write of {var} in line {node.lineno}")
 
                self._print_other_threads(var, target.name, readers, writers)
-
-         if target.name in writers:
-               for node in writers[target.name]:
-                  if not self._is_protected(node):
-                     found_bad_var = True
-                     print(f"      Unprotected write of {var} in line {node.lineno}")
-
-               self._print_other_threads(var, target.name, readers, writers)
-
+               
       return found_bad_var
  
    def analyze_shared_vars(self):

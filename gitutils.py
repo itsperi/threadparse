@@ -5,7 +5,10 @@ from urllib.parse import urlparse
 import re
 
 pattern = re.compile(
-   r'^\s*(?:import\s+.*\bthreading\b|from\s+threading\s+import\b)',
+   r'^\s*(?:'
+   r'import\s+.*\bthreading\b.*'
+   r'|from\s+threading\s+import\b'
+   r')',
    re.MULTILINE
 )
 
