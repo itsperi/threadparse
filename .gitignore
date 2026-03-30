@@ -1,2 +1,4 @@
 /files
-repos.txt
+test.py
+*.pyc
+__pycache__/
