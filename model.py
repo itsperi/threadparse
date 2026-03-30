@@ -7,6 +7,7 @@ class ThreadTarget:
    node: ast.AST
    reads: dict[str, ast.AST] = field(default_factory=dict)
    writes: dict[str, ast.AST] = field(default_factory=dict)
+   calls: dict[str, ast.AST] = field(default_factory=dict)
       
 class Scope:
    def __init__(self, parent=None):
@@ -24,3 +25,4 @@ class ProgramModel:
       self.thread_targets : list[ThreadTarget]= []
       self.seen_targets : set = set()
       self.function_scopes : dict[str, Scope] = {}
+      self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}

@@ -125,7 +125,8 @@ class ThreadPass(PCNodeVisitor):
    
 MUTATING_METHODS = {
    "append", "extend", "insert", "remove",
-   "pop", "clear", "update", "add", "discard"
+   "pop", "clear", "update", "add", "discard",
+   "push", "enqueue", "dequeue", "put", "get",
 }
 
 '''
@@ -266,7 +267,55 @@ class TargetUpdate:
          target.reads = parser.reads
          target.writes = parser.writes
          target.calls = parser.calls
+         
+'''
+This pass of the AST is meant to analyze
+variables/data structures across the entire
+program and detect any that are shared among thread targets
+'''
+
+class SharedUpdate(PCNodeVisitor):
+   def __init__(self, model):
+      self.model = model
+      # We should store the nodes of the reads/writes 
+      # in the form: var -> target -> list of nodes for easier analysis later
+      self.var_reads: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
+      self.var_writes: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
+      
+      
+   def _populate(self):
+      # In each target, we have dicts of reads/writes: var -> list of nodes
+      for target in self.model.thread_targets:
+         tname = target.name         
+         for var, nodes in target.reads.items():
+            self.var_reads[var][tname].extend(nodes)
             
+         for var, nodes in target.writes.items():
+            self.var_writes[var][tname].extend(nodes)
+
+   def _update(self):
+      shared = {}
+      
+      all_vars = set(self.var_reads.keys()) | set(self.var_writes.keys())
+      
+      for var in all_vars:
+         reader_targets = set(self.var_reads[var].keys())
+         writer_targets = set(self.var_writes[var].keys())
+         involved_targets = reader_targets | writer_targets
+         
+         # We should include the nodes themselves
+         if len(involved_targets) > 1:
+            shared[var] = {
+               "reads": {t: self.var_reads[var][t] for t in reader_targets},
+               "writes": {t: self.var_writes[var][t] for t in writer_targets}
+            }
+            
+      self.model.shared_vars = shared
+   
+   def update_shared_vars(self):
+      self._populate()
+      self._update()
+
 '''
 This pass of the AST is meant to go over the thread targets
 identified earlier along with their state and detect any
@@ -276,7 +325,7 @@ class CriticalPass:
    def __init__(self, model):
       self.model = model
       
-   def is_with_locking(self, node):
+   def _is_with_locking(self, node):
       locks = ("lock", "acquire")
       for item in node.items:
          ctx = item.context_expr
@@ -293,16 +342,16 @@ class CriticalPass:
                   
       return False
       
-   def is_inside_with(self, node):
+   def _is_inside_with(self, node):
       current = node
       while hasattr(current, "parent") and current.parent:
          if isinstance(current.parent, ast.With):
-            if self.is_with_locking(current.parent):
+            if self._is_with_locking(current.parent):
                return True
          current = current.parent
       return False     
    
-   def is_lock_call(self, node):
+   def _is_lock_call(self, node):
       if not isinstance(node, ast.Expr):
          return False
 
@@ -315,7 +364,7 @@ class CriticalPass:
 
       return False
 
-   def is_unlock_call(self, node):
+   def _is_unlock_call(self, node):
       if not isinstance(node, ast.Expr):
          return False
 
@@ -328,14 +377,14 @@ class CriticalPass:
 
       return False
    
-   def get_parent_statement(self, node):
+   def _get_parent_statement(self, node):
       current = node
       while current and not isinstance(current, ast.stmt):
          current = getattr(current, "parent", None)
       return current
    
-   def is_between_lock_unlock(self, node):
-      stmt = self.get_parent_statement(node)
+   def _is_between_lock_unlock(self, node):
+      stmt = self._get_parent_statement(node)
 
       parent = stmt.parent
       if not hasattr(parent, "body"):
@@ -349,9 +398,9 @@ class CriticalPass:
 
       # search backwards for lock
       for i in range(idx - 1, -1, -1):
-         if self.is_unlock_call(body[i]):
+         if self._is_unlock_call(body[i]):
             break
-         if self.is_lock_call(body[i]):
+         if self._is_lock_call(body[i]):
             lock_found = True
             break
 
@@ -360,14 +409,17 @@ class CriticalPass:
 
       # search forward for unlock
       for i in range(idx + 1, len(body)):
-         if self.is_lock_call(body[i]):
+         if self._is_lock_call(body[i]):
             break
-         if self.is_unlock_call(body[i]):
+         if self._is_unlock_call(body[i]):
             return True
 
       return False
    
-   def is_external(self, name, scope: Scope):
+   def _is_protected(self, node):
+      return self._is_inside_with(node) or self._is_between_lock_unlock(node)
+   
+   def _is_external(self, name, scope: Scope):
       if name in scope.locals:
          return False
 
@@ -382,76 +434,147 @@ class CriticalPass:
 
       return True  # assume module/global
    
+   def _is_shared_variable(self, var, scope):
+      return (
+         var in self.model.shared_vars or
+         var in self.model.globals or
+         var in self.model.nonlocals or
+         self._is_external(var, scope)
+      )
+   
+   def _get_shared_accesses(self, target):
+      shared_reads = {
+         var for var in target.reads
+         if self._is_shared_variable(var, scope=self.model.function_scopes.get(target.name))
+      }
+
+      shared_writes = {
+         var for var in target.writes
+         if self._is_shared_variable(var, scope=self.model.function_scopes.get(target.name))
+      }
+
+      return shared_reads, shared_writes
+   
+   def _classify_variable(self, var):
+      if var in self.model.globals:
+         return "GLOBAL"
+      if var in self.model.nonlocals:
+         return "NONLOCAL"
+      if var in self.model.shared_vars:
+         return "CROSS_THREAD"
+      return "OTHER"
+   
+   def _get_unprotected_calls(self, target):
+      return {func for func in target.calls}
+   
+   def _analyze_calls(self, target, unprotected_calls):
+      found_bad_call = False
+
+      for func, nodes in target.calls.items():
+         for node in nodes:
+               if not self._is_protected(node):
+                  if func in unprotected_calls:
+                     print(f"      Unprotected call  to {func} in line {node.lineno}")
+                     found_bad_call = True
+
+      return found_bad_call
+   
+   def _print_thread_header(self, target, shared_reads, shared_writes, calls):
+      print(f"\nThread routine: {target.name}")
+      
+      if shared_reads:
+         print("   Reads shared variables:")
+         for var in shared_reads:
+            print(f"    {var} [{self._classify_variable(var)}]")
+         print() 
+            
+      if shared_writes:
+         print("   Writes shared variables:")
+         for var in shared_writes:
+            print(f"    {var} [{self._classify_variable(var)}]")
+         print() 
+
+      if calls:
+         print("   Calls functions:", calls)
+         
+   def _print_other_threads(self, var, current, readers, writers):
+      other_readers = [t for t in readers if t != current]
+      other_writers = [t for t in writers if t != current]
+
+      if other_readers:
+         print(f"      Other threads reading {var}: {other_readers}")
+      if other_writers:
+         print(f"      Other threads writing {var}: {other_writers}")
+      if other_readers or other_writers:
+         print()
+         
+   def _print_no_shared(self, target):
+      print(f"\n Thread routine: {target.name}")
+      print(f"   No shared variables detected")
+         
+   def _analyze_shared_variables(self, target, shared_reads, shared_writes):
+      found_bad_var = False
+      
+      for var in shared_reads:
+         shared_info = self.model.shared_vars.get(var)
+         if not shared_info:
+            continue
+         readers = shared_info["reads"]
+         writers = shared_info["writes"]
+
+         for node in readers[target.name]:
+            if not self._is_protected(node):
+               found_bad_var = True
+               print(f"      Unprotected read of {var} in line {node.lineno}")
+
+         self._print_other_threads(var, target.name, readers, writers)
+
+      for var in shared_writes:
+         shared_info = self.model.shared_vars.get(var, {"reads": {}, "writes": {}})
+         readers = shared_info["reads"]
+         writers = shared_info["writes"]
+
+         if target.name in writers:
+               for node in writers[target.name]:
+                  if not self._is_protected(node):
+                     found_bad_var = True
+                     print(f"      Unprotected read of {var} in line {node.lineno}")
+
+               self._print_other_threads(var, target.name, readers, writers)
+
+         # Writes
+         if target.name in writers:
+               for node in writers[target.name]:
+                  if not self._is_protected(node):
+                     found_bad_var = True
+                     print(f"      Unprotected write of {var} in line {node.lineno}")
+
+               self._print_other_threads(var, target.name, readers, writers)
+
+      return found_bad_var
+ 
    def analyze_shared_vars(self):
       if not self.model.thread_targets:
          return
-      # g_vars = set(self.model.globals.keys())
-      # nl_vars = set(self.model.nonlocals.keys())
       
       print(f"\nAnalyzing program: {self.model.name}")
       
       for target in self.model.thread_targets:
-         scope = self.model.function_scopes[target.name]
-         
-         # shared_reads = set(target.reads.keys() & (g_vars | nl_vars))
-         # shared_writes = set(target.writes.keys() & (g_vars | nl_vars))
+         shared_reads, shared_writes = self._get_shared_accesses(target)
+         unprotected_calls = self._get_unprotected_calls(target)
 
-         shared_reads = {
-            var for var in target.reads
-            if self.is_external(var, scope)
-         }
-
-         shared_writes = {
-            var for var in target.writes
-            if self.is_external(var, scope)
-         }
-         
-         unprotected_calls = {
-            func for func in target.calls
-         }
-         
          if shared_reads or shared_writes or unprotected_calls:
-            print(f"\nThread routine: {target.name}")
-            # if shared_reads:
-            #    print("   Reads shared variables:", shared_reads)
-            if shared_writes:
-               print("   Writes shared variables:", shared_writes)
-            if unprotected_calls:
-               print("   Calls functions:", unprotected_calls)
-            
-            found_bad_var = False
-            found_bad_call = False
+               self._print_thread_header(target, shared_reads, shared_writes, unprotected_calls)
 
-            # for var, nodes in target.reads.items():
-            #    for node in nodes:
-            #       if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
-            #          if var in shared_reads:
-            #             found_bad_var = True
-            #             print(f"      Unprotected read  of {var} in line {node.lineno}")   
+               found_bad_var = self._analyze_shared_variables(target, shared_reads, shared_writes)
+               found_bad_call = self._analyze_calls(target, unprotected_calls)
 
-            for var, nodes in target.writes.items():
-               for node in nodes:
-                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):  
-                     if var in shared_writes:
-                        found_bad_var = True
-                        print(f"      Unprotected write of {var} in line {node.lineno}")   
-   
-            for func, nodes in target.calls.items():
-               for node in nodes:
-                  if not (self.is_inside_with(node) or self.is_between_lock_unlock(node)):
-                     if func in unprotected_calls:
-                        print(f"      Unprotected call  to {func} in line {node.lineno}")
-                        found_bad_call = True
-
-            if not found_bad_var:
-               print("      No unprotected variables detected")
-            
-            if not found_bad_call:
-               print("      No unprotected function calls detected")
+               if not found_bad_var:
+                  print("      No unprotected variables detected")
                
+               if not found_bad_call:
+                  print("      No unprotected function calls detected")
          else:
-            print(f"\n Thread routine: {target.name}")
-            print(f"   No shared variables detected")
-
+               self._print_no_shared(target)
                   
          

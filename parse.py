@@ -1,6 +1,6 @@
 import sys
 import gitutils as util
-from passes import SymbolPass, ScopePass, ThreadPass, TargetUpdate, CriticalPass
+from passes import SymbolPass, ScopePass, ThreadPass, TargetUpdate, SharedUpdate, CriticalPass
 from model import ProgramModel
 
 '''
@@ -28,6 +28,7 @@ class Analyzer:
       ScopePass(self.model).visit(self.tree)
       ThreadPass(self.model).visit(self.tree)
       TargetUpdate(self.model).update_thread_accesses()
+      SharedUpdate(self.model).update_shared_vars()
       CriticalPass(self.model).analyze_shared_vars()
             
 '''
