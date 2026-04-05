@@ -19,10 +19,13 @@ class Scope:
 class ProgramModel:
    def __init__(self, name=""):
       self.name: str = name
-      self.functions : dict[str, ast.AST] = {}
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
+      self.module_vars : dict[str, ast.AST] = {}
+      self.functions : dict[str, ast.AST] = {}
+      self.function_scopes : dict[str, Scope] = {}
+      self.function_globals: dict[str, set[str]] = {}
+      self.function_nonlocals: dict[str, set[str]] = {}
       self.thread_targets : list[ThreadTarget]= []
       self.seen_targets : set = set()
-      self.function_scopes : dict[str, Scope] = {}
       self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}
