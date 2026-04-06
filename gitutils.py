@@ -2,18 +2,6 @@ import ast
 import requests
 from pathlib import Path   
 from urllib.parse import urlparse
-import re
-
-pattern = re.compile(
-   r'^\s*(?:'
-   r'import\s+.*\bthreading\b.*'
-   r'|from\s+threading\s+import\b'
-   r')',
-   re.MULTILINE
-)
-
-def uses_threading(code: str) -> bool:
-   return bool(pattern.search(code))
 
 '''
 Opens the file given as the filepath
@@ -25,17 +13,13 @@ def build_ast_from_filepath(filepath: str):
       with open(filepath) as f:
          program = f.read()
    except FileNotFoundError:
-      print(f"\nThe given file <{filepath}> doesn't exist\n")
+      print(f"\nThe given file <{filepath}> doesn't exist")
       return None
    
    try:
-      if uses_threading(program):
-         tree = ast.parse(program)
-      else:
-         # print(f"No threading usage detected\n")
-         return None
+      tree = ast.parse(program)
    except Exception as e:
-      print(f"\nThere was an error parsing <{filepath}> into an AST: {e}\n")
+      print(f"\nThere was an error parsing <{filepath}> into an AST: {e}")
       return None
    
    return tree
@@ -47,11 +31,7 @@ if it contains the threading library
 '''
 def build_ast_from_program(filepath: str, file: str):
    try:
-      if uses_threading(file):
-         tree = ast.parse(file)
-      else:
-         # print(f"No threading usage detected\n")
-         return None
+      tree = ast.parse(file)
    except Exception as e:
       print(f"There was an error parsing <{filepath}> into an AST: {e}\n")
       return None

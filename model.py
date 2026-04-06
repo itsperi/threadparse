@@ -8,6 +8,7 @@ class ThreadTarget:
    reads: dict[str, ast.AST] = field(default_factory=dict)
    writes: dict[str, ast.AST] = field(default_factory=dict)
    calls: dict[str, ast.AST] = field(default_factory=dict)
+   sibling_writes: dict[str, dict[str, list]] = field(default_factory=dict)
       
 class Scope:
    def __init__(self, parent=None):
@@ -18,14 +19,23 @@ class Scope:
    
 class ProgramModel:
    def __init__(self, name=""):
+      # Data about the program as a whole
       self.name: str = name
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
       self.module_vars : dict[str, ast.AST] = {}
+      
+      # Data about functions and relative scopes
       self.functions : dict[str, ast.AST] = {}
       self.function_scopes : dict[str, Scope] = {}
       self.function_globals: dict[str, set[str]] = {}
       self.function_nonlocals: dict[str, set[str]] = {}
+
+      # Data about classes and their methods
+      self.method_to_class : dict[str, str] = {}
+      self.class_methods: dict[str, set[str]] = {}
+      
+      # Data about threads and their accesses
       self.thread_targets : list[ThreadTarget]= []
       self.seen_targets : set = set()
       self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}

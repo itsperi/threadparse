@@ -10,19 +10,65 @@ class PCNodeVisitor(ast.NodeVisitor):
         for child in ast.iter_child_nodes(node):
             child.parent = node
             self.visit(child)
+
+'''
+This pass of the AST is meant to detect
+whether a file contains the threading import
+'''
+
+class ImportDetection(ast.NodeVisitor):
+   def __init__(self):
+      self.uses_threading = False
+
+   def visit_Import(self, node):
+      for alias in node.names:
+         if alias.name == "threading":
+            self.uses_threading = True
+            
+      self.generic_visit(node)
+
+   def visit_ImportFrom(self, node):
+      if node.module == "threading":
+         self.uses_threading = True
+      self.generic_visit(node)
             
 '''
 This pass of the AST is meant to gather the names and locations
 of global, nonlocal variables and function definitions to later 
-use as potential pieces of interest in threads
+use as potential pieces of interest in threads, as well as 
+gathering info about class definitions for later resolution of method calls
 '''
 class SymbolPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
       self._current_function = None
+      self._current_class = None
+      
+   # Simply used to update the live class we're visiting
+   def visit_ClassDef(self, node):
+      previous_class = self._current_class
+      self._current_class = node.name
+      self.generic_visit(node)
+      self._current_class = previous_class
 
+   # Functions are saved with their qualified name
+   # which helps to resolve thread accesses that
+   # use class data instead of simple module-level data
    def visit_FunctionDef(self, node):
-      self.model.functions[node.name] = node
+      if self._current_class:
+         qualified_name = f"{self._current_class}.{node.name}"
+      else:
+         qualified_name = node.name
+      self.model.functions[qualified_name] = node
+      
+      # If a function is defined within a class, 
+      # we want to save the qualified name as well for later reference
+      if self._current_class:
+         self.model.method_to_class[qualified_name] = self._current_class
+         self.model.class_methods \
+            .setdefault(self._current_class, set()) \
+            .add(qualified_name)
+         
       previous = self._current_function
       self._current_function = node.name
       self.generic_visit(node)
@@ -72,9 +118,16 @@ class ScopePass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
       self.scope_stack: list[Scope] = []
+      self._current_class = None
 
    def current_scope(self):
       return self.scope_stack[-1] if self.scope_stack else None
+
+   def visit_ClassDef(self, node):
+      previous = self._current_class
+      self._current_class = node.name
+      self.generic_visit(node)
+      self._current_class = previous
 
    '''
    Whenever we enter a function definition, we create a new scope
@@ -82,6 +135,11 @@ class ScopePass(PCNodeVisitor):
    and save it in the program model for later use.
    '''
    def visit_FunctionDef(self, node):
+      if self._current_class:
+         qualified_name = f"{self._current_class}.{node.name}"
+      else:
+         qualified_name = node.name
+         
       scope = Scope(parent=self.current_scope())
       self.scope_stack.append(scope)
 
@@ -91,7 +149,7 @@ class ScopePass(PCNodeVisitor):
 
       self.generic_visit(node)
 
-      self.model.function_scopes[node.name] = scope
+      self.model.function_scopes[qualified_name] = scope
       self.scope_stack.pop()
 
    def visit_Name(self, node):
@@ -173,38 +231,62 @@ as Thread targets and saves their nodes for later use
 class ThreadPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
+      self._current_class = None
       
+   def visit_ClassDef(self, node):
+      previous = self._current_class
+      self._current_class = node.name
+      self.generic_visit(node)
+      self._current_class = previous
+   
+   # God smite my children for
+   # having this much nesting   
    def visit_Call(self, node):
+      # Look for calls to Thread(target=...)
       if isinstance(node.func, ast.Name):
          if node.func.id == "Thread":
             for kw in node.keywords:
                if kw.arg == "target":
-                  name : str | None = self.get_target(kw.value)
-                  if name and name not in self.model.seen_targets and name in self.model.functions.keys():
+                  name = self.get_target(kw.value)
+                  # Only targets known as defined functions are added
+                  if name and name not in self.model.seen_targets \
+                  and name in self.model.functions.keys():
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
                      self.model.seen_targets.add(name)
-                     # print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
 
+      # Repeat for attribute access in case of threading.Thread(target=...)
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
                if kw.arg == "target":
                   name = self.get_target(kw.value)
-                  if name and name not in self.model.seen_targets and name in self.model.functions.keys():
+                  if name and name not in self.model.seen_targets \
+                  and name in self.model.functions.keys():
                      target = ThreadTarget(name, node)
                      self.model.thread_targets.append(target)
                      self.model.seen_targets.add(name)
-                     # print(f"Found thread target: {target.name} {(node.lineno, node.col_offset)}")
                      
       self.generic_visit(node)
                      
    def get_target(self, node):
-      if isinstance(node, (ast.Name, ast.Attribute)):
-         if isinstance(node, ast.Name):
-            return node.id
-         if isinstance(node, ast.Attribute):
-            return node.attr
+      if isinstance(node, ast.Attribute):
+         method = node.attr
+         # Resolve self.method -> "ClassName.method"
+         if isinstance(node.value, ast.Name) and node.value.id == "self":
+               if self._current_class:
+                  qualified = f"{self._current_class}.{method}"
+                  if qualified in self.model.functions:
+                     return qualified
+                  
+         for cls, methods in self.model.class_methods.items():
+               if method in methods:
+                  return f"{cls}.{method}"
+         return method
+
+      if isinstance(node, ast.Name):
+         return node.id
+
       return None
    
 MUTATING_METHODS = {
@@ -303,7 +385,8 @@ class TargetPass(PCNodeVisitor):
          root = full_name.split(".")[0]
          
          if self.scope and root in self.scope.locals and root not in {"self", "cls"}:
-            # If the root of this attribute is a local variable, we can ignore it for cross-thread sharing purposes
+            # If the root of this attribute is a local variable, 
+            # we can ignore it for cross-thread sharing purposes
             self.generic_visit(node)
             return
 
@@ -371,7 +454,51 @@ class TargetUpdate:
          target.reads = parser.reads
          target.writes = parser.writes
          target.calls = parser.calls
-         
+
+'''
+This pass of the AST is meant to check 
+targets belonging to a class and capture
+info about instance attributes
+'''
+
+class ClassResolutionPass:
+   def __init__(self, model):
+      self.model = model
+
+   def resolve_classes(self):
+      for target in self.model.thread_targets:
+         # Extract class name from qualified target name
+         if "." not in target.name:
+            continue
+
+         class_name = target.name.split(".")[0]
+         sibling_methods = self.model.class_methods.get(class_name, set())
+
+         for method in sibling_methods:
+            qualified = f"{class_name}.{method}"
+
+            # Skip the target itself and __init__
+            if qualified == target.name or method == "__init__":
+               continue
+
+            method_node = self.model.functions.get(qualified)
+            if not method_node:
+               continue
+
+            scope = self.model.function_scopes.get(qualified)
+            parser = TargetPass(scope=scope)
+            parser.visit(method_node)
+
+            # Merge writes from sibling methods into the target's writes
+            # Tag them so we know they're from a sibling, not the target itself
+            for var, nodes in parser.writes.items():
+               if var.startswith("self."):
+                  if var not in target.sibling_writes:
+                     target.sibling_writes[var] = {}
+                  target.sibling_writes[var] \
+                        .setdefault(method, []) \
+                        .extend(nodes)
+                        
 '''
 This pass of the AST is meant to analyze
 variables/data structures across the entire
@@ -396,6 +523,12 @@ class SharedUpdate(PCNodeVisitor):
             
          for var, nodes in target.writes.items():
             self.var_writes[var][tname].extend(nodes)
+            
+         for var, method_nodes in target.sibling_writes.items():
+            for method, nodes in method_nodes.items():
+               # Key by "ClassName.method" so the source is identifiable
+               sibling_key = f"{tname}::{method}"
+               self.var_writes[var][sibling_key].extend(nodes)
 
    def _update(self):
       shared = {}
@@ -421,8 +554,9 @@ class SharedUpdate(PCNodeVisitor):
 
 '''
 This pass of the AST is meant to go over the thread targets
-identified earlier along with their state and detect any
-behavior that may be considered thread-unsafe
+identified earlier along with the relevant information
+from the previous passes and detect novel behavior that
+may be considered thread-unsafe
 '''
 class CriticalPass:
    def __init__(self, model):
@@ -567,6 +701,7 @@ class CriticalPass:
       if var in scope.globals or var in scope.nonlocals:
          return True
       
+      # Otherwise defer to the program model
       return self._is_external(var, scope)
    
    def _get_shared_accesses(self, target):
@@ -599,11 +734,11 @@ class CriticalPass:
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
       print(f"\nThread routine: {target.name}")
       
-      if shared_reads:
-         print("   Reads shared variables:")
-         for var in shared_reads:
-            print(f"    {var} [{self._classify_variable(var)}]")
-         print() 
+      # if shared_reads:
+      #    print("   Reads shared variables:")
+      #    for var in shared_reads:
+      #       print(f"    {var} [{self._classify_variable(var)}]")
+      #    print() 
             
       if shared_writes:
          print("   Writes shared variables:")
@@ -689,7 +824,7 @@ class CriticalPass:
       if not self.model.thread_targets:
          return
       
-      print(f"\nAnalyzing program: {self.model.name}")
+      print(f"\nAnalyzing threads in program: {self.model.name}")
       
       found_bad_var, found_bad_call = False, False
       

@@ -1,6 +1,6 @@
 import sys
 import gitutils as util
-from passes import SymbolPass, ScopePass, ThreadPass, TargetUpdate, SharedUpdate, CriticalPass
+from passes import ImportDetection, SymbolPass, ScopePass, ThreadPass, TargetUpdate, ClassResolutionPass, SharedUpdate, CriticalPass
 from model import ProgramModel
 
 '''
@@ -24,10 +24,18 @@ class Analyzer:
       self.model = ProgramModel(name=name)
       
    def run(self):
+      if not self.tree:
+         print(f"No AST to analyze: {self.model.name}")
+         return None
+      import_detection = ImportDetection()
+      import_detection.visit(self.tree)
+      if not import_detection.uses_threading:
+         return None
       SymbolPass(self.model).visit(self.tree)
       ScopePass(self.model).visit(self.tree)
       ThreadPass(self.model).visit(self.tree)
       TargetUpdate(self.model).update_thread_accesses()
+      ClassResolutionPass(self.model).resolve_classes()
       SharedUpdate(self.model).update_shared_vars()
       result = CriticalPass(self.model).analyze_shared_vars()
 
@@ -45,13 +53,11 @@ def parse_files(paths: list[str]):
 
    for path in paths:
       tree = util.build_ast_from_filepath(path)
-      if not tree:
-         continue
 
       analyzer = Analyzer(tree, name=path)
       result = analyzer.run()
 
-      if result["unsafe"]:
+      if result and result["unsafe"]:
          unsafe_files.append(path)
 
    print("\n====================")
