@@ -284,7 +284,11 @@ class ThreadPass(PCNodeVisitor):
 
       return None
    
-   
+'''
+This pass of the AST is meant to 
+build a call graph so we can 
+find transitive threadtarget calls later
+'''
 class CallGraphPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
@@ -326,7 +330,12 @@ class CallGraphPass(PCNodeVisitor):
          self.model.call_graph[self.current_function].add(callee)
 
       self.generic_visit(node)
-      
+
+'''
+This class is meant to update the
+program model so that we include 
+the indirect thread targets
+'''
 class ThreadExpansion:
     def __init__(self, model):
         self.model = model
@@ -526,7 +535,6 @@ This pass of the AST is meant to check
 targets belonging to a class and capture
 info about instance attributes
 '''
-
 class ClassResolutionPass:
    def __init__(self, model):
       self.model = model
@@ -570,7 +578,6 @@ This pass of the AST is meant to analyze
 variables/data structures across the entire
 program and detect any that are shared among thread targets
 '''
-
 class SharedUpdate(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
