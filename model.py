@@ -6,9 +6,9 @@ class ThreadTarget:
    name: str
    class_name: str
    node: ast.AST
-   reads: dict[str, ast.AST] = field(default_factory=dict)
-   writes: dict[str, ast.AST] = field(default_factory=dict)
-   calls: dict[str, ast.AST] = field(default_factory=dict)
+   reads: dict[str, list[ast.AST]] = field(default_factory=dict)
+   writes: dict[str, list[ast.AST]] = field(default_factory=dict)
+   calls: dict[str, list[ast.AST]] = field(default_factory=dict)
    sibling_writes: dict[str, dict[str, list]] = field(default_factory=dict)
       
 class Scope:
@@ -31,6 +31,7 @@ class ProgramModel:
       self.function_scopes : dict[str, Scope] = {}
       self.function_globals: dict[str, set[str]] = {}
       self.function_nonlocals: dict[str, set[str]] = {}
+      self.call_graph : dict[str, set[str]] = {}
 
       # Data about classes and their methods
       self.method_to_class : dict[str, str] = {}

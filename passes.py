@@ -41,59 +41,59 @@ gathering info about class definitions for later resolution of method calls
 class SymbolPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
-      self._current_function = None
-      self._current_class = None
+      self.current_function = None
+      self.current_class = None
       
    # Simply used to update the live class we're visiting
    def visit_ClassDef(self, node):
-      previous_class = self._current_class
-      self._current_class = node.name
+      previous_class = self.current_class
+      self.current_class = node.name
       self.generic_visit(node)
-      self._current_class = previous_class
+      self.current_class = previous_class
 
    # Functions are saved with their qualified name
    # which helps to resolve thread accesses that
    # use class data instead of simple module-level data
    def visit_FunctionDef(self, node):
-      if self._current_class:
-         qualified_name = f"{self._current_class}.{node.name}"
+      if self.current_class:
+         qualified_name = f"{self.current_class}.{node.name}"
       else:
          qualified_name = node.name
       self.model.functions[qualified_name] = node
       
       # If a function is defined within a class, 
       # we want to save the qualified name as well for later reference
-      if self._current_class:
-         self.model.method_to_class[qualified_name] = self._current_class
+      if self.current_class:
+         self.model.method_to_class[qualified_name] = self.current_class
          self.model.class_methods \
-            .setdefault(self._current_class, set()) \
+            .setdefault(self.current_class, set()) \
             .add(qualified_name)
          
-      previous = self._current_function
-      self._current_function = node.name
+      previous = self.current_function
+      self.current_function = node.name
       self.generic_visit(node)
-      self._current_function = previous
+      self.current_function = previous
 
    def visit_Global(self, node):
       for name in node.names:
          self.model.globals[name] = node
          
-         if self._current_function:
+         if self.current_function:
             self.model.function_globals \
-               .setdefault(self._current_function, set()) \
+               .setdefault(self.current_function, set()) \
                .add(name)
 
    def visit_Nonlocal(self, node):
       for name in node.names:
          self.model.nonlocals[name] = node
          
-         if self._current_function:
+         if self.current_function:
             self.model.function_nonlocals \
-               .setdefault(self._current_function, set()) \
+               .setdefault(self.current_function, set()) \
                .add(name)
                
    def visit_Assign(self, node):
-      if self._current_function is None:
+      if self.current_function is None:
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.module_vars[name] = node
@@ -118,16 +118,16 @@ class ScopePass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
       self.scope_stack: list[Scope] = []
-      self._current_class = None
+      self.current_class = None
 
    def current_scope(self):
       return self.scope_stack[-1] if self.scope_stack else None
 
    def visit_ClassDef(self, node):
-      previous = self._current_class
-      self._current_class = node.name
+      previous = self.current_class
+      self.current_class = node.name
       self.generic_visit(node)
-      self._current_class = previous
+      self.current_class = previous
 
    '''
    Whenever we enter a function definition, we create a new scope
@@ -135,8 +135,8 @@ class ScopePass(PCNodeVisitor):
    and save it in the program model for later use.
    '''
    def visit_FunctionDef(self, node):
-      if self._current_class:
-         qualified_name = f"{self._current_class}.{node.name}"
+      if self.current_class:
+         qualified_name = f"{self.current_class}.{node.name}"
       else:
          qualified_name = node.name
          
@@ -231,13 +231,13 @@ as Thread targets and saves their nodes for later use
 class ThreadPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
-      self._current_class = None
+      self.current_class = None
       
    def visit_ClassDef(self, node):
-      previous = self._current_class
-      self._current_class = node.name
+      previous = self.current_class
+      self.current_class = node.name
       self.generic_visit(node)
-      self._current_class = previous
+      self.current_class = previous
       
    def _check_target(self, node, kw):
       if kw.arg == "target":
@@ -245,7 +245,7 @@ class ThreadPass(PCNodeVisitor):
          # Only targets known as defined functions are added
          if name and name not in self.model.seen_targets \
          and name in self.model.functions.keys():
-            target = ThreadTarget(name, self._current_class, node)
+            target = ThreadTarget(name, self.current_class, node)
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(name)
    
@@ -269,8 +269,8 @@ class ThreadPass(PCNodeVisitor):
          method = node.attr
          # Resolve self.method -> "ClassName.method"
          if isinstance(node.value, ast.Name) and node.value.id == "self":
-            if self._current_class:
-               qualified = f"{self._current_class}.{method}"
+            if self.current_class:
+               qualified = f"{self.current_class}.{method}"
                if qualified in self.model.functions:
                   return qualified
                   
@@ -284,6 +284,72 @@ class ThreadPass(PCNodeVisitor):
 
       return None
    
+   
+class CallGraphPass(PCNodeVisitor):
+   def __init__(self, model):
+      self.model = model
+      self.current_function = None
+      self.current_class = None
+
+   def visit_ClassDef(self, node):
+      prev = self.current_class
+      self.current_class = node.name
+      self.generic_visit(node)
+      self.current_class = prev
+
+   def visit_FunctionDef(self, node):
+      if self.current_class:
+         fname = f"{self.current_class}.{node.name}"
+      else:
+         fname = node.name
+         
+      self.model.call_graph.setdefault(fname, set())
+
+      prev = self.current_function
+      self.current_function = fname
+      self.generic_visit(node)
+      self.current_function = prev
+
+   def visit_Call(self, node):
+      if not self.current_function:
+         return
+
+      callee = None
+
+      if isinstance(node.func, ast.Name):
+         callee = node.func.id
+
+      elif isinstance(node.func, ast.Attribute):
+         callee = node.func.attr
+
+      if callee and callee in self.model.functions:
+         self.model.call_graph[self.current_function].add(callee)
+
+      self.generic_visit(node)
+      
+class ThreadExpansion:
+    def __init__(self, model):
+        self.model = model
+
+    def expand(self):
+        worklist = [t.name for t in self.model.thread_targets]
+        visited = set(worklist)
+
+        while worklist:
+            current = worklist.pop()
+
+            for callee in self.model.call_graph.get(current, []):
+                # Only consider known functions
+                if callee in self.model.functions and callee not in visited:
+                    visited.add(callee)
+                    worklist.append(callee)
+
+                    # Add as synthetic thread target
+                    self.model.thread_targets.append(
+                        ThreadTarget(callee, None, self.model.functions[callee])
+                    )
+                    
+
 MUTATING_METHODS = {
    "append", "extend", "insert", "remove",
    "pop", "clear", "add", "discard",
@@ -348,12 +414,10 @@ class TargetPass(PCNodeVisitor):
    def visit_AugAssign(self, node):
       target = node.target
 
-      # Case 1: simple variable (x += 1)
       if isinstance(target, ast.Name):
          self.reads[target.id].append(node)
          self.writes[target.id].append(node)
 
-      # Case 2: attribute (self.x += 1)
       elif isinstance(target, ast.Attribute):
          full_name = self.get_full_attr_name(target)
          if full_name and full_name.startswith("self.") and self.class_name:
@@ -362,7 +426,6 @@ class TargetPass(PCNodeVisitor):
                self.reads[full_name].append(node)
                self.writes[full_name].append(node)
 
-      # Case 3: subscript (arr[i] += 1)
       elif isinstance(target, ast.Subscript):
          if isinstance(target.value, ast.Name):
                self.reads[target.value.id].append(node)
@@ -405,7 +468,7 @@ class TargetPass(PCNodeVisitor):
       if isinstance(node.func, ast.Name):
          func_name = node.func.id
          if func_name in MUTATING_METHODS:
-            self.writes[func_name].append(node)
+            self.calls[func_name].append(node)
 
       # Case 2: obj.method()
       elif isinstance(node.func, ast.Attribute):
@@ -417,7 +480,7 @@ class TargetPass(PCNodeVisitor):
 
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
-               self.writes[obj.id].append(node)
+               self.calls[func_name].append(node)
 
       self.generic_visit(node)
       
