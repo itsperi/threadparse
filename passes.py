@@ -238,50 +238,45 @@ class ThreadPass(PCNodeVisitor):
       self._current_class = node.name
       self.generic_visit(node)
       self._current_class = previous
+      
+   def _check_target(self, node, kw):
+      if kw.arg == "target":
+         name = self._qualify(kw.value)
+         # Only targets known as defined functions are added
+         if name and name not in self.model.seen_targets \
+         and name in self.model.functions.keys():
+            target = ThreadTarget(name, self._current_class, node)
+            self.model.thread_targets.append(target)
+            self.model.seen_targets.add(name)
    
-   # God smite my children for
-   # having this much nesting   
    def visit_Call(self, node):
       # Look for calls to Thread(target=...)
       if isinstance(node.func, ast.Name):
          if node.func.id == "Thread":
             for kw in node.keywords:
-               if kw.arg == "target":
-                  name = self.get_target(kw.value)
-                  # Only targets known as defined functions are added
-                  if name and name not in self.model.seen_targets \
-                  and name in self.model.functions.keys():
-                     target = ThreadTarget(name, node)
-                     self.model.thread_targets.append(target)
-                     self.model.seen_targets.add(name)
+               self._check_target(node, kw)
 
       # Repeat for attribute access in case of threading.Thread(target=...)
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
-               if kw.arg == "target":
-                  name = self.get_target(kw.value)
-                  if name and name not in self.model.seen_targets \
-                  and name in self.model.functions.keys():
-                     target = ThreadTarget(name, node)
-                     self.model.thread_targets.append(target)
-                     self.model.seen_targets.add(name)
+               self._check_target(node, kw)
                      
       self.generic_visit(node)
                      
-   def get_target(self, node):
+   def _qualify(self, node):
       if isinstance(node, ast.Attribute):
          method = node.attr
          # Resolve self.method -> "ClassName.method"
          if isinstance(node.value, ast.Name) and node.value.id == "self":
-               if self._current_class:
-                  qualified = f"{self._current_class}.{method}"
-                  if qualified in self.model.functions:
-                     return qualified
+            if self._current_class:
+               qualified = f"{self._current_class}.{method}"
+               if qualified in self.model.functions:
+                  return qualified
                   
          for cls, methods in self.model.class_methods.items():
-               if method in methods:
-                  return f"{cls}.{method}"
+            if method in methods:
+               return f"{cls}.{method}"
          return method
 
       if isinstance(node, ast.Name):
@@ -302,11 +297,12 @@ about the variable reads, writes, function calls with
 potential side effects, and subscript/attribute accesses 
 '''
 class TargetPass(PCNodeVisitor):
-   def __init__(self, scope: Scope = None):
+   def __init__(self, scope: Scope = None, class_name: str = None):
       self.reads = defaultdict(list)
       self.writes = defaultdict(list)
       self.calls = defaultdict(list)
       self.scope = scope
+      self.class_name = class_name
       
    # For attribute accesses, we need to 
    # extract the entire chain: class.list.append()
@@ -360,6 +356,8 @@ class TargetPass(PCNodeVisitor):
       # Case 2: attribute (self.x += 1)
       elif isinstance(target, ast.Attribute):
          full_name = self.get_full_attr_name(target)
+         if full_name and full_name.startswith("self.") and self.class_name:
+            full_name = f"{self.class_name}.{full_name[5:]}"
          if full_name:
                self.reads[full_name].append(node)
                self.writes[full_name].append(node)
@@ -376,6 +374,8 @@ class TargetPass(PCNodeVisitor):
    # For attribute accesses like class.x
    def visit_Attribute(self, node):
       full_name = self.get_full_attr_name(node)
+      if full_name and full_name.startswith("self.") and self.class_name:
+         full_name = f"{self.class_name}.{full_name[5:]}"
 
       if full_name:
          # If this attribute is part of a Call, classify ONLY as call, not read
@@ -410,6 +410,8 @@ class TargetPass(PCNodeVisitor):
       # Case 2: obj.method()
       elif isinstance(node.func, ast.Attribute):
          func_name = self.get_full_attr_name(node.func)
+         if func_name and func_name.startswith("self.") and self.class_name:
+            func_name = f"{self.class_name}.{func_name[5:]}"
          method = node.func.attr
          obj = node.func.value
 
@@ -447,8 +449,9 @@ class TargetUpdate:
       for target in self.model.thread_targets:
          target_node = self.model.functions[target.name]
          target_scope = self.model.function_scopes.get(target.name)
+         target_class = target.class_name
          
-         parser = TargetPass(scope = target_scope)
+         parser = TargetPass(scope = target_scope, class_name = target_class)
          parser.visit(target_node)
          
          target.reads = parser.reads
@@ -471,7 +474,7 @@ class ClassResolutionPass:
          if "." not in target.name:
             continue
 
-         class_name = target.name.split(".")[0]
+         class_name = target.class_name
          sibling_methods = self.model.class_methods.get(class_name, set())
 
          for method in sibling_methods:

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ThreadTarget:
    name: str
+   class_name: str
    node: ast.AST
    reads: dict[str, ast.AST] = field(default_factory=dict)
    writes: dict[str, ast.AST] = field(default_factory=dict)
