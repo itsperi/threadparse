@@ -21,16 +21,33 @@ class ImportDetection(ast.NodeVisitor):
       self.uses_threading = False
 
    def visit_Import(self, node):
-      # We want to check for threading and _thread
       for alias in node.names:
-         if alias.name == "threading" or alias.name == "_thread":
+         if alias.name in {"threading", 
+                           "_thread", 
+                           "concurrent.futures"
+                           "multiprocessing.pool"}:
             self.uses_threading = True
+            return
             
       self.generic_visit(node)
 
    def visit_ImportFrom(self, node):
-      if node.module == "threading" or node.module == "_thread":
+      if node.module in {"threading", 
+                         "_thread", 
+                         "concurrent", 
+                         "concurrent.futures", 
+                         "multiprocessing.pool"}:
          self.uses_threading = True
+         return
+      
+      # Just in case
+      for alias in node.names:
+         if alias.name in {"Thread", 
+                           "start_new_thread", 
+                           "ThreadPoolExecutor",
+                           "ThreadPool"}:
+            self.uses_threading = True
+            return
       self.generic_visit(node)
             
 '''
@@ -250,7 +267,7 @@ class ThreadPass(PCNodeVisitor):
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(name)
    
-   def _check__thread(self, arg):
+   def _check_thread(self, arg):
       # The first argument to start_new_thread() is the target function
       name = self._qualify(arg)         
       if name and name not in self.model.seen_targets \
@@ -258,28 +275,32 @@ class ThreadPass(PCNodeVisitor):
          target = ThreadTarget(name, self.current_class, arg)
          self.model.thread_targets.append(target)
          self.model.seen_targets.add(name)
-   
+         
    def visit_Call(self, node):
       # Look for calls to Thread(target=...)
       if isinstance(node.func, ast.Name):
          if node.func.id == "Thread":
             for kw in node.keywords:
                self._check_threading(node, kw)
+               
+         # Maybe not needed?
          elif node.func.id == "start_new_thread":
             if node.args:
-               self._check__thread(node.args[0])
+               self._check_thread(node.args[0])
 
       # Repeat for attribute access in case of threading.Thread(target=...)
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
                self._check_threading(node, kw)
+               
+         # or for _threading.start_new_thread cases
          elif node.func.attr == "start_new_thread":
             if node.args:
-               self._check__thread(node.args[0]) 
-                     
+               self._check_thread(node.args[0]) 
+                                       
       self.generic_visit(node)
-                     
+      
    def _qualify(self, node):
       if isinstance(node, ast.Attribute):
          method = node.attr
