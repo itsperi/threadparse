@@ -287,7 +287,6 @@ class ThreadPass(PCNodeVisitor):
          if isinstance(node.value, ast.Name) and node.value.id == "self":
             if self.current_class:
                qualified = f"{self.current_class}.{method}"
-               print(f"Qualifying self method access: {qualified}")
                if qualified in self.model.functions:
                   return qualified
                   
