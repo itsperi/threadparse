@@ -21,14 +21,15 @@ class ImportDetection(ast.NodeVisitor):
       self.uses_threading = False
 
    def visit_Import(self, node):
+      # We want to check for threading and _thread
       for alias in node.names:
-         if alias.name == "threading":
+         if alias.name == "threading" or alias.name == "_thread":
             self.uses_threading = True
             
       self.generic_visit(node)
 
    def visit_ImportFrom(self, node):
-      if node.module == "threading":
+      if node.module == "threading" or node.module == "_thread":
          self.uses_threading = True
       self.generic_visit(node)
             
@@ -239,7 +240,7 @@ class ThreadPass(PCNodeVisitor):
       self.generic_visit(node)
       self.current_class = previous
       
-   def _check_target(self, node, kw):
+   def _check_threading(self, node, kw):
       if kw.arg == "target":
          name = self._qualify(kw.value)
          # Only targets known as defined functions are added
@@ -249,18 +250,33 @@ class ThreadPass(PCNodeVisitor):
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(name)
    
+   def _check__thread(self, arg):
+      # The first argument to start_new_thread() is the target function
+      name = self._qualify(arg)         
+      if name and name not in self.model.seen_targets \
+      and name in self.model.functions.keys():
+         target = ThreadTarget(name, self.current_class, arg)
+         self.model.thread_targets.append(target)
+         self.model.seen_targets.add(name)
+   
    def visit_Call(self, node):
       # Look for calls to Thread(target=...)
       if isinstance(node.func, ast.Name):
          if node.func.id == "Thread":
             for kw in node.keywords:
-               self._check_target(node, kw)
+               self._check_threading(node, kw)
+         elif node.func.id == "start_new_thread":
+            if node.args:
+               self._check__thread(node.args[0])
 
       # Repeat for attribute access in case of threading.Thread(target=...)
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
-               self._check_target(node, kw)
+               self._check_threading(node, kw)
+         elif node.func.attr == "start_new_thread":
+            if node.args:
+               self._check__thread(node.args[0]) 
                      
       self.generic_visit(node)
                      
@@ -271,12 +287,13 @@ class ThreadPass(PCNodeVisitor):
          if isinstance(node.value, ast.Name) and node.value.id == "self":
             if self.current_class:
                qualified = f"{self.current_class}.{method}"
+               print(f"Qualifying self method access: {qualified}")
                if qualified in self.model.functions:
                   return qualified
                   
-         for cls, methods in self.model.class_methods.items():
+         for _class, methods in self.model.class_methods.items():
             if method in methods:
-               return f"{cls}.{method}"
+               return f"{_class}.{method}"
          return method
 
       if isinstance(node, ast.Name):
