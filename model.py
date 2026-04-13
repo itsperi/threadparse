@@ -38,6 +38,7 @@ class ProgramModel:
       self.class_methods: dict[str, set[str]] = {}
       
       # Data about threads and their accesses
+      self.executors: dict[str, set[ast.AST]] = {}
       self.thread_targets : list[ThreadTarget]= []
       self.seen_targets : set = set()
       self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}

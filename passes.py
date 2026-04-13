@@ -22,9 +22,9 @@ class ImportDetection(ast.NodeVisitor):
 
    def visit_Import(self, node):
       for alias in node.names:
-         if alias.name in {"threading", 
-                           "_thread", 
-                           "concurrent.futures"
+         if alias.name in {"threading",
+                           "_thread",
+                           "concurrent.futures",
                            "multiprocessing.pool"}:
             self.uses_threading = True
             return
@@ -32,18 +32,18 @@ class ImportDetection(ast.NodeVisitor):
       self.generic_visit(node)
 
    def visit_ImportFrom(self, node):
-      if node.module in {"threading", 
-                         "_thread", 
-                         "concurrent", 
-                         "concurrent.futures", 
+      if node.module in {"threading",
+                         "_thread",
+                         "concurrent",
+                         "concurrent.futures",
                          "multiprocessing.pool"}:
          self.uses_threading = True
          return
       
       # Just in case
       for alias in node.names:
-         if alias.name in {"Thread", 
-                           "start_new_thread", 
+         if alias.name in {"Thread",
+                           "start_new_thread",
                            "ThreadPoolExecutor",
                            "ThreadPool"}:
             self.uses_threading = True
@@ -115,6 +115,25 @@ class SymbolPass(PCNodeVisitor):
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.module_vars[name] = node
+      self.generic_visit(node)
+      
+   def visit_With(self, node):
+      for with_item in node.items:
+         context_expr = with_item.context_expr
+         if isinstance(context_expr, ast.Call):
+            func = context_expr.func
+            is_executor = (
+               isinstance(func, ast.Name) and func.id == "ThreadPoolExecutor"
+            ) or (
+               isinstance(func, ast.Attribute) and func.attr == "ThreadPoolExecutor"
+            )
+            if is_executor:
+               alias = with_item.optional_vars
+               if isinstance(alias, ast.Name):
+                  name = alias.id
+                  self.model.executors \
+                     .setdefault(name, set())\
+                     .add(context_expr)   
       self.generic_visit(node)
       
    def _extract_names(self, node):
@@ -276,19 +295,25 @@ class ThreadPass(PCNodeVisitor):
          self.model.thread_targets.append(target)
          self.model.seen_targets.add(name)
          
+   def _check_executor(self, arg, executor_node=None):
+      name = self._qualify(arg)
+      if name and name not in self.model.seen_targets \
+      and name in self.model.functions.keys():
+         # Check if the call is on a known executor
+         executor_name = self._qualify(executor_node) if executor_node else None
+         if executor_name and executor_name in self.model.executors:
+               target = ThreadTarget(name, self.current_class, arg)
+               self.model.thread_targets.append(target)
+               self.model.seen_targets.add(name)
+
    def visit_Call(self, node):
       # Look for calls to Thread(target=...)
       if isinstance(node.func, ast.Name):
          if node.func.id == "Thread":
             for kw in node.keywords:
                self._check_threading(node, kw)
-               
-         # Maybe not needed?
-         elif node.func.id == "start_new_thread":
-            if node.args:
-               self._check_thread(node.args[0])
 
-      # Repeat for attribute access in case of threading.Thread(target=...)
+      # Most cases, we are calling attribute methods
       elif isinstance(node.func, ast.Attribute):
          if node.func.attr == "Thread":
             for kw in node.keywords:
@@ -298,7 +323,11 @@ class ThreadPass(PCNodeVisitor):
          elif node.func.attr == "start_new_thread":
             if node.args:
                self._check_thread(node.args[0]) 
-                                       
+         
+         elif node.func.attr == "submit" or node.func.attr == "map":
+            if node.args:
+               self._check_executor(node.args[0], node.func.value)
+
       self.generic_visit(node)
       
    def _qualify(self, node):
@@ -839,7 +868,7 @@ class CriticalPass:
       return "OTHER"
    
    def _get_unprotected_calls(self, target):
-      return {func for func in target.calls}
+      return {func for func in target.calls if not self._is_protected(func)}
    
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
       print(f"\nThread routine: {target.name}")
