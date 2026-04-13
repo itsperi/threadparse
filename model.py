@@ -9,7 +9,9 @@ class ThreadTarget:
    reads: dict[str, list[ast.AST]] = field(default_factory=dict)
    writes: dict[str, list[ast.AST]] = field(default_factory=dict)
    calls: dict[str, list[ast.AST]] = field(default_factory=dict)
+   # If the target belongs to a class, we need to analyze instance state
    sibling_writes: dict[str, dict[str, list]] = field(default_factory=dict)
+   sibling_reads: dict[str, dict[str, list]] = field(default_factory=dict)
       
 class Scope:
    def __init__(self, parent=None):

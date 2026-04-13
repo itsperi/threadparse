@@ -695,7 +695,7 @@ This pass of the AST is meant to check
 targets belonging to a class and capture
 info about instance attributes
 '''
-class ClassResolutionPass:
+class ClassResolutionPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
 
@@ -723,15 +723,21 @@ class ClassResolutionPass:
             parser = TargetPass(scope=scope)
             parser.visit(method_node)
 
-            # Merge writes from sibling methods into the target's writes
+            # Merge r/w from sibling methods into the target's writes
             # Tag them so we know they're from a sibling, not the target itself
             for var, nodes in parser.writes.items():
-               if var.startswith("self."):
-                  if var not in target.sibling_writes:
-                     target.sibling_writes[var] = {}
-                  target.sibling_writes[var] \
-                        .setdefault(method, []) \
-                        .extend(nodes)
+               if var.startswith("self.") or var.startswith(f"{class_name}."):
+                  target.sibling_writes \
+                     .setdefault(var, {}) \
+                     .setdefault(method, []) \
+                     .extend(nodes)
+            
+            for var, nodes in parser.reads.items():
+               if var.startswith("self.") or var.startswith(f"{class_name}."):
+                  target.sibling_reads \
+                     .setdefault(var, {}) \
+                     .setdefault(method, []) \
+                     .extend(nodes)
                         
 '''
 This pass of the AST is meant to analyze
@@ -745,10 +751,12 @@ class SharedUpdate(PCNodeVisitor):
       # in the form: var -> target -> list of nodes for easier analysis later
       self.var_reads: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
       self.var_writes: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
-      
+      # May God smite my children for what I just wrote
       
    def _populate(self):
       # In each target, we have dicts of reads/writes: var -> list of nodes
+      target_names = {t.name for t in self.model.thread_targets}
+      
       for target in self.model.thread_targets:
          tname = target.name         
          for var, nodes in target.reads.items():
@@ -762,6 +770,22 @@ class SharedUpdate(PCNodeVisitor):
                # Key by "ClassName.method" so the source is identifiable
                sibling_key = f"{tname}::{method}"
                self.var_writes[var][sibling_key].extend(nodes)
+               
+      # We need to consider main thread scope
+      for fname, fnode in self.model.functions.items():
+         if fname in target_names:
+               continue
+         scope = self.model.function_scopes.get(fname)
+         class_name = self.model.method_to_class.get(fname)
+         parser = TargetPass(scope=scope, 
+                              class_name=class_name,
+                              var_types=self.model.var_types)
+         parser.visit(fnode)
+
+         for var, nodes in parser.writes.items():
+               self.var_writes[var][f"__main__::{fname}"].extend(nodes)
+         for var, nodes in parser.reads.items():
+               self.var_reads[var][f"__main__::{fname}"].extend(nodes)
 
    def _update(self):
       shared = {}
@@ -1036,6 +1060,7 @@ class CriticalPass:
          for node in nodes:
                if not self._is_protected(node): 
                   found_bad_call = True
+                  print(f"      Unprotected call  of {func} in line {node.lineno}")
 
       # for func, nodes in target.calls.items():
       #    for node in nodes:
