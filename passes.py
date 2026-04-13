@@ -2,6 +2,8 @@ import ast
 from model import ThreadTarget, Scope
 from collections import defaultdict
 
+COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
+
 '''
 Custom NodeVisitor that enables parent tracking for upwards recursion
 '''
@@ -145,7 +147,94 @@ class SymbolPass(PCNodeVisitor):
             names.extend(self._extract_names(elt))
          return names
       return []
-      
+
+'''
+This pass of the AST is meant to gather types of
+variables created in the program so we can filter
+out the mutations to Python's naturally unsafe default
+collections like lists, sets, and dicts (Queues are threadsafe tho)
+'''
+class TypeInferencePass(PCNodeVisitor):
+   def __init__(self, model):
+      self.model = model
+      self.current_function = None
+      self.current_class = None
+
+   def visit_ClassDef(self, node):
+      prev = self.current_class
+      self.current_class = node.name
+      self.generic_visit(node)
+      self.current_class = prev
+
+   def visit_FunctionDef(self, node):
+      prev = self.current_function
+      self.current_function = node.name
+      self.generic_visit(node)
+      self.current_function = prev
+
+   def visit_Assign(self, node):
+      inferred = self._infer(node.value)
+      if inferred:
+         for target in node.targets:
+            for name in self._extract_names(target):
+               self.model.var_types[name] = inferred
+      self.generic_visit(node)
+
+   def visit_AnnAssign(self, node):
+      # Handles: x: list = []
+      inferred = self._infer(node.value) if node.value else self._infer_annotation(node.annotation)
+      if inferred and isinstance(node.target, ast.Name):
+         self.model.var_types[node.target.id] = inferred
+      self.generic_visit(node)
+
+   def _infer(self, node):
+      if node is None:
+         return None
+      if isinstance(node, ast.List):
+         return "list"
+      if isinstance(node, ast.Dict):
+         return "dict"
+      if isinstance(node, ast.Set):
+         return "set"
+      # Constructor calls: list(), dict(), set(), defaultdict(list), etc.
+      if isinstance(node, ast.Call):
+         return self._infer_call(node)
+      return None
+
+   def _infer_call(self, node):
+      if isinstance(node.func, ast.Name):
+         name = node.func.id
+         if name in COLLECTION_CONSTRUCTORS:
+            # Normalize defaultdict/OrderedDict()
+            return {"defaultdict": "dict", "OrderedDict": "dict",
+                  "Counter": "dict"}.get(name, name)
+      elif isinstance(node.func, ast.Attribute):
+         # Normalize collections.defaultdict(...)
+         if node.func.attr in COLLECTION_CONSTRUCTORS:
+            return {"defaultdict": "dict", "OrderedDict": "dict",
+                  "Counter": "dict"}.get(node.func.attr, node.func.attr)
+      return None
+
+   def _infer_annotation(self, node):
+      # Handles bare annotations like x: list
+      if isinstance(node, ast.Name) and node.id in {"list", "dict", "set"}:
+         return node.id
+      # Handles subscript annotations like x: list[int]
+      if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+         if node.value.id in {"List", "Dict", "Set", "list", "dict", "set"}:
+            return node.value.id.lower()
+      return None
+
+   def _extract_names(self, node):
+      if isinstance(node, ast.Name):
+         return [node.id]
+      elif isinstance(node, (ast.Tuple, ast.List)):
+         names = []
+         for elt in node.elts:
+            names.extend(self._extract_names(elt))
+         return names
+      return []
+
 '''
 This pass of the AST is meant to go over the function
 definitions, variable writes in each function/scope
@@ -438,12 +527,13 @@ about the variable reads, writes, function calls with
 potential side effects, and subscript/attribute accesses 
 '''
 class TargetPass(PCNodeVisitor):
-   def __init__(self, scope: Scope = None, class_name: str = None):
+   def __init__(self, scope: Scope = None, class_name: str = None, var_types = None):
       self.reads = defaultdict(list)
       self.writes = defaultdict(list)
       self.calls = defaultdict(list)
       self.scope = scope
       self.class_name = class_name
+      self.var_types = var_types
       
    # For attribute accesses, we need to 
    # extract the entire chain: class.list.append()
@@ -498,13 +588,13 @@ class TargetPass(PCNodeVisitor):
          if full_name and full_name.startswith("self.") and self.class_name:
             full_name = f"{self.class_name}.{full_name[5:]}"
          if full_name:
-               self.reads[full_name].append(node)
-               self.writes[full_name].append(node)
+            self.reads[full_name].append(node)
+            self.writes[full_name].append(node)
 
       elif isinstance(target, ast.Subscript):
          if isinstance(target.value, ast.Name):
-               self.reads[target.value.id].append(node)
-               self.writes[target.value.id].append(node)
+            self.reads[target.value.id].append(node)
+            self.writes[target.value.id].append(node)
                
       # Don't call generic_visit, we'll double count
       # self.generic_visit(node)     
@@ -553,9 +643,11 @@ class TargetPass(PCNodeVisitor):
          method = node.func.attr
          obj = node.func.value
 
-         if method in MUTATING_METHODS:
+         if method in MUTATING_METHODS and isinstance(obj, ast.Name):
             if isinstance(obj, ast.Name):
-               self.calls[func_name].append(node)
+               obj_type = self.var_types.get(obj.id)
+               if obj_type in {"list", "set", "dict"} or obj_type is None: 
+                  self.calls[func_name].append(node)
 
       self.generic_visit(node)
       
@@ -589,7 +681,9 @@ class TargetUpdate:
          target_scope = self.model.function_scopes.get(target.name)
          target_class = target.class_name
          
-         parser = TargetPass(scope = target_scope, class_name = target_class)
+         parser = TargetPass(scope = target_scope, 
+                             class_name = target_class,
+                             var_types = self.model.var_types)
          parser.visit(target_node)
          
          target.reads = parser.reads
@@ -843,6 +937,28 @@ class CriticalPass:
       # Otherwise defer to the program model
       return self._is_external(var, scope)
    
+   def _get_receiver(self, func_key: str) -> str | None:
+      parts = func_key.rsplit(".", 1)
+      if len(parts) < 2:
+         return None
+      return parts[0]  # everything before the last dot
+   
+   def _receiver_is_shared(self, receiver: str, scope: Scope) -> bool:
+      if receiver is None:
+         return False
+      
+      # Direct match in shared_vars (e.g. 'results', 'MyClass.data')
+      if receiver in self.model.shared_vars:
+         return True
+      
+      # Also check the root name for attribute chains like 'self.data'
+      root = receiver.split(".")[0]
+      if root in self.model.shared_vars:
+         return True
+      
+      # Fall back to the general shared-variable check on the root
+      return self._is_shared_variable(root, scope)
+   
    def _get_shared_accesses(self, target):
       shared_reads = {
          var for var in target.reads
@@ -905,13 +1021,28 @@ class CriticalPass:
 
    def _analyze_calls(self, target, unprotected_calls):
       found_bad_call = False
-
+      
+      scope = self.model.function_scopes.get(target.name)
       for func, nodes in target.calls.items():
+         if func not in unprotected_calls:
+               continue
+
+         receiver = self._get_receiver(func)
+
+         # If we can positively identify the receiver as local/unshared, skip it
+         if receiver is not None and not self._receiver_is_shared(receiver, scope):
+            continue
+
          for node in nodes:
-               if not self._is_protected(node):
-                  if func in unprotected_calls:
-                     print(f"      Unprotected call  to {func} in line {node.lineno}")
-                     found_bad_call = True
+               if not self._is_protected(node): 
+                  found_bad_call = True
+
+      # for func, nodes in target.calls.items():
+      #    for node in nodes:
+      #          if not self._is_protected(node):
+      #             if func in unprotected_calls:
+      #                print(f"      Unprotected call  to {func} in line {node.lineno}")
+      #                found_bad_call = True
 
       return found_bad_call
          

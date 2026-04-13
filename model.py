@@ -25,6 +25,7 @@ class ProgramModel:
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
       self.module_vars : dict[str, ast.AST] = {}
+      self.var_types : dict[str, str] = {}
       
       # Data about functions and relative scopes
       self.functions : dict[str, ast.AST] = {}

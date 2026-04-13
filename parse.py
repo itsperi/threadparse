@@ -3,6 +3,7 @@ import gitutils as util
 from passes import (
    ImportDetection,
    SymbolPass,
+   TypeInferencePass,
    ScopePass,
    ThreadPass,
    CallGraphPass,
@@ -43,6 +44,7 @@ class Analyzer:
       if not import_detection.uses_threading:
          return None
       SymbolPass(self.model).visit(self.tree)
+      TypeInferencePass(self.model).visit(self.tree)
       ScopePass(self.model).visit(self.tree)
       ThreadPass(self.model).visit(self.tree)
       CallGraphPass(self.model).visit(self.tree)
