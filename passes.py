@@ -93,6 +93,8 @@ class SymbolPass(PCNodeVisitor):
       self.current_function = node.name
       self.generic_visit(node)
       self.current_function = previous
+      
+   visit_AsyncFunctionDef = visit_FunctionDef
 
    def visit_Global(self, node):
       for name in node.names:
@@ -171,6 +173,9 @@ class TypeInferencePass(PCNodeVisitor):
       self.current_function = node.name
       self.generic_visit(node)
       self.current_function = prev
+   
+   visit_AsyncFunctionDef = visit_FunctionDef
+
 
    def visit_Assign(self, node):
       inferred = self._infer(node.value)
@@ -277,6 +282,8 @@ class ScopePass(PCNodeVisitor):
 
       self.model.function_scopes[qualified_name] = scope
       self.scope_stack.pop()
+   
+   visit_AsyncFunctionDef = visit_FunctionDef
 
    def visit_Name(self, node):
       scope = self.current_scope()
@@ -468,6 +475,8 @@ class CallGraphPass(PCNodeVisitor):
       self.current_function = fname
       self.generic_visit(node)
       self.current_function = prev
+      
+   visit_AsyncFunctionDef = visit_FunctionDef
 
    def visit_Call(self, node):
       if not self.current_function:
@@ -479,7 +488,12 @@ class CallGraphPass(PCNodeVisitor):
          callee = node.func.id
 
       elif isinstance(node.func, ast.Attribute):
-         callee = node.func.attr
+         bare = node.func.attr
+         if self.current_class:
+            qualified = f"{self.current_class}.{bare}"
+            callee = qualified if qualified in self.model.functions else bare
+         else:
+            callee = bare
 
       if callee and callee in self.model.functions:
          self.model.call_graph[self.current_function].add(callee)
@@ -504,15 +518,15 @@ class ThreadExpansion:
 
             for callee in self.model.call_graph.get(current, []):
                 # Only consider known functions
-                if callee in self.model.functions and callee not in visited:
-                    visited.add(callee)
-                    worklist.append(callee)
+               if callee in self.model.functions and callee not in visited:
+                  visited.add(callee)
+                  worklist.append(callee)
 
-                    # Add as synthetic thread target
-                    self.model.thread_targets.append(
-                        ThreadTarget(callee, None, self.model.functions[callee])
-                    )
-                    
+                  # Add as synthetic thread target
+                  class_name = self.model.method_to_class.get(callee)
+                  self.model.thread_targets.append(
+                     ThreadTarget(callee, class_name, self.model.functions[callee])
+                  )                    
 
 MUTATING_METHODS = {
    "append", "extend", "insert", "remove",
@@ -783,9 +797,9 @@ class SharedUpdate(PCNodeVisitor):
          parser.visit(fnode)
 
          for var, nodes in parser.writes.items():
-               self.var_writes[var][f"__main__::{fname}"].extend(nodes)
+               self.var_writes[var][f"{fname}"].extend(nodes)
          for var, nodes in parser.reads.items():
-               self.var_reads[var][f"__main__::{fname}"].extend(nodes)
+               self.var_reads[var][f"{fname}"].extend(nodes)
 
    def _update(self):
       shared = {}
