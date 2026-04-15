@@ -53,6 +53,35 @@ class Analyzer:
       ClassResolutionPass(self.model).resolve_classes()
       SharedUpdate(self.model).update_shared_vars()
       result = CriticalPass(self.model).analyze_shared_vars()
+      
+      # ================= DEBUGGING =================
+      # for func, node in self.model.functions.items():
+      #    print(f"Function: {func}")
+      #    print(f"  Globals: {self.model.function_globals.get(func, set())}")
+      #    print(f"  Nonlocals: {self.model.function_nonlocals.get(func, set())}")
+      #    print(f"  Calls: {self.model.call_graph.get(func, set())}")
+      
+      # for target in self.model.thread_targets:
+      #    print(f"Thread Target: {target.name} (in class {target.class_name})")
+      #    print(f"  Reads: {list(target.reads.keys())}")
+      #    print(f"  Writes: {list(target.writes.keys())}")
+      #    print(f"  Calls: {list(target.calls.keys())}")
+      #    for var, accesses in target.sibling_writes.items():
+      #       print(f"  Sibling Writes to {var}:")
+      #       for sibling, nodes in accesses.items():
+      #          print(f"    {sibling}: {len(nodes)} writes")
+      #    for var, accesses in target.sibling_reads.items():
+      #       print(f"  Sibling Reads to {var}:")
+      #       for sibling, nodes in accesses.items():
+      #          print(f"    {sibling}: {len(nodes)} reads")
+         
+      # for cl, node in self.model.class_attrs.items():
+      #    print(f"Class Attribute: {cl}")
+         
+      # for var, nodes in self.model.shared_vars.items():
+      #    print(f"Shared Variable: {var} accessed in:")
+      #    for target, accesses in nodes.items():
+      #       print(f"  {target}: {len(accesses)} accesses")
 
       return {
          "name": self.model.name,

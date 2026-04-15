@@ -39,6 +39,7 @@ class ProgramModel:
       # Data about classes and their methods
       self.method_to_class : dict[str, str] = {}
       self.class_methods: dict[str, set[str]] = {}
+      self.class_attrs: dict[str, ast.AST] = {}
       
       # Data about threads and their accesses
       self.executors: dict[str, set[ast.AST]] = {}

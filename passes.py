@@ -8,10 +8,10 @@ COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", 
 Custom NodeVisitor that enables parent tracking for upwards recursion
 '''
 class PCNodeVisitor(ast.NodeVisitor):
-    def generic_visit(self, node):
-        for child in ast.iter_child_nodes(node):
-            child.parent = node
-            self.visit(child)
+   def generic_visit(self, node):
+      for child in ast.iter_child_nodes(node):
+         child.parent = node
+         self.visit(child)
 
 '''
 This pass of the AST is meant to detect
@@ -119,6 +119,15 @@ class SymbolPass(PCNodeVisitor):
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.module_vars[name] = node
+               
+      if self.current_class and self.current_function:
+         for target in node.targets:
+            if (isinstance(target, ast.Attribute) 
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"):
+               qualified = f"{self.current_class}.{target.attr}"
+               self.model.class_attrs[qualified] = node
+
       self.generic_visit(node)
       
    def visit_With(self, node):
@@ -528,10 +537,11 @@ class ThreadExpansion:
                      ThreadTarget(callee, class_name, self.model.functions[callee])
                   )                    
 
+# We only care about list, set, and dict mutations
 MUTATING_METHODS = {
-   "append", "extend", "insert", "remove",
-   "pop", "clear", "add", "discard",
-   "push", "enqueue", "dequeue",
+   "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse",  # list
+   "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update",  # set
+   "clear", "pop", "popitem", "setdefault", "update",  # dict
 }
 
 '''
@@ -657,11 +667,19 @@ class TargetPass(PCNodeVisitor):
          method = node.func.attr
          obj = node.func.value
 
-         if method in MUTATING_METHODS and isinstance(obj, ast.Name):
+         if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                obj_type = self.var_types.get(obj.id)
-               if obj_type in {"list", "set", "dict"} or obj_type is None: 
+               if obj_type in {"list", "set", "dict"} or obj_type is None:
                   self.calls[func_name].append(node)
+            elif isinstance(obj, ast.Attribute):
+               # handles self.clients.append(), self.data.add(), etc.
+               full_obj = self.get_full_attr_name(obj)
+               if full_obj and full_obj.startswith("self.") and self.class_name:
+                  full_obj = f"{self.class_name}.{full_obj[5:]}"
+               if full_obj:
+                  self.calls[full_obj + "." + method].append(node)
+                  self.writes[full_obj].append(node)  # also record as a write
 
       self.generic_visit(node)
       
@@ -670,12 +688,26 @@ class TargetPass(PCNodeVisitor):
       if isinstance(node.ctx, ast.Store):
          if isinstance(node.value, ast.Name):
             self.writes[node.value.id].append(node)
+      elif isinstance(node.value, ast.Attribute):   
+         full_name = self.get_full_attr_name(node.value)
+         if full_name and full_name.startswith("self.") and self.class_name:
+               full_name = f"{self.class_name}.{full_name[5:]}"
+         if full_name:
+               self.writes[full_name].append(node)
             
       elif isinstance(node.ctx, ast.Load):
          if isinstance(node.value, ast.Name):
             parent = getattr(node, "parent", None)
             if not isinstance(parent, ast.Assign):
                self.reads[node.value.id].append(node)
+         elif isinstance(node.value, ast.Attribute):
+            full_name = self.get_full_attr_name(node.value)
+            if full_name and full_name.startswith("self.") and self.class_name:
+               full_name = f"{self.class_name}.{full_name[5:]}"
+            if full_name:
+               parent = getattr(node, "parent", None)
+               if not isinstance(parent, ast.Assign):
+                  self.reads[full_name].append(node)
       self.generic_visit(node)
 
 
@@ -734,7 +766,7 @@ class ClassResolutionPass(PCNodeVisitor):
                continue
 
             scope = self.model.function_scopes.get(qualified)
-            parser = TargetPass(scope=scope)
+            parser = TargetPass(scope=scope, class_name=class_name, var_types=self.model.var_types)
             parser.visit(method_node)
 
             # Merge r/w from sibling methods into the target's writes
@@ -787,7 +819,7 @@ class SharedUpdate(PCNodeVisitor):
                
       # We need to consider main thread scope
       for fname, fnode in self.model.functions.items():
-         if fname in target_names:
+         if fname in target_names or fname.endswith(".__init__"):
                continue
          scope = self.model.function_scopes.get(fname)
          class_name = self.model.method_to_class.get(fname)
@@ -954,7 +986,8 @@ class CriticalPass:
       return (
          name in self.model.globals or 
          name in self.model.nonlocals or
-         name in self.model.module_vars
+         name in self.model.module_vars or
+         name in self.model.class_attrs
       )
    
    def _is_shared_variable(self, var, scope: Scope):
@@ -1013,12 +1046,14 @@ class CriticalPass:
    def _classify_variable(self, var):
       if var in self.model.globals:
          return "GLOBAL"
-      if var in self.model.nonlocals:
+      elif var in self.model.nonlocals:
          return "NONLOCAL"
-      if var in self.model.shared_vars:
+      elif var in self.model.shared_vars:
          return "CROSS_THREAD"
-      if var in self.model.module_vars:
+      elif var in self.model.module_vars:
          return "MAIN_SCOPE"
+      elif var in self.model.class_attrs:
+         return "CLASS_ATTR"
       return "OTHER"
    
    def _get_unprotected_calls(self, target):
@@ -1027,11 +1062,11 @@ class CriticalPass:
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
       print(f"\nThread routine: {target.name}")
       
-      # if shared_reads:
-      #    print("   Reads shared variables:")
-      #    for var in shared_reads:
-      #       print(f"    {var} [{self._classify_variable(var)}]")
-      #    print() 
+      if shared_reads:
+         print("   Reads shared variables:")
+         for var in shared_reads:
+            print(f"    {var} [{self._classify_variable(var)}]")
+         print() 
             
       if shared_writes:
          print("   Writes shared variables:")
@@ -1088,24 +1123,24 @@ class CriticalPass:
    def _analyze_shared_variables(self, target, shared_reads, shared_writes):
       found_bad_var = False
       
-      # for var in shared_reads:
-      #    shared_info = self.model.shared_vars.get(var)
-      #    if not shared_info:
-      #       for node in target.reads.get(var, []):
-      #          if not self._is_protected(node):
-      #             found_bad_var = True
-      #             print(f"      Unprotected read of {var} in line {node.lineno}")
-      #       continue
+      for var in shared_reads:
+         shared_info = self.model.shared_vars.get(var)
+         if not shared_info:
+            for node in target.reads.get(var, []):
+               if not self._is_protected(node):
+                  # found_bad_var = True
+                  print(f"      Unprotected read of {var} in line {node.lineno}")
+            continue
                   
-      #    readers = shared_info["reads"]
-      #    writers = shared_info["writes"]
+         readers = shared_info["reads"]
+         writers = shared_info["writes"]
 
-      #    for node in readers[target.name]:
-      #       if not self._is_protected(node):
-      #          found_bad_var = True
-      #          print(f"      Unprotected read of {var} in line {node.lineno}")
+         for node in readers[target.name]:
+            if not self._is_protected(node):
+               found_bad_var = True
+               print(f"      Unprotected read of {var} in line {node.lineno}")
 
-      #    self._print_other_threads(var, target.name, readers, writers)
+         self._print_other_threads(var, target.name, readers, writers)
 
       for var in shared_writes:
          shared_info = self.model.shared_vars.get(var)
