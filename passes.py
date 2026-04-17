@@ -56,7 +56,8 @@ class ImportDetection(ast.NodeVisitor):
 This pass of the AST is meant to gather the names and locations
 of global, nonlocal variables and function definitions to later 
 use as potential pieces of interest in threads, as well as 
-gathering info about class definitions for later resolution of method calls
+gathering info about class definitions for later resolution of method calls;
+we also capture rudimentary data about various ways threads are instantiated
 '''
 class SymbolPass(PCNodeVisitor):
    def __init__(self, model):
@@ -119,6 +120,21 @@ class SymbolPass(PCNodeVisitor):
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.module_vars[name] = node
+      
+      if isinstance(node.value, ast.Call):
+         func = node.value.func
+         is_executor = (
+            isinstance(func, ast.Name) and func.id in ("ThreadPoolExecutor", "ThreadPool")
+         ) or (
+            isinstance(func, ast.Attribute) and func.attr in ("ThreadPoolExecutor", "ThreadPool")
+         )
+         # Greedily add assignments as executors
+         if is_executor:
+            for target in node.targets:
+               for name in self._extract_names(target):
+                  self.model.executors \
+                     .setdefault(name, set()) \
+                     .add(node.value)
                
       if self.current_class and self.current_function:
          for target in node.targets:
@@ -136,9 +152,9 @@ class SymbolPass(PCNodeVisitor):
          if isinstance(context_expr, ast.Call):
             func = context_expr.func
             is_executor = (
-               isinstance(func, ast.Name) and func.id == "ThreadPoolExecutor"
+               isinstance(func, ast.Name) and func.id in ("ThreadPoolExecutor", "ThreadPool")
             ) or (
-               isinstance(func, ast.Attribute) and func.attr == "ThreadPoolExecutor"
+               isinstance(func, ast.Attribute) and func.attr in ("ThreadPoolExecutor", "ThreadPool")
             )
             if is_executor:
                alias = with_item.optional_vars
@@ -364,6 +380,10 @@ class ScopePass(PCNodeVisitor):
             comp_scope.locals.add(name)
       self.generic_visit(node)
       self.scope_stack.pop()
+      
+      enclosing = self.current_scope()
+      if enclosing is not None:
+         enclosing.locals.update(comp_scope.locals)
          
 '''
 This pass of the AST is meant to gather 
@@ -429,7 +449,8 @@ class ThreadPass(PCNodeVisitor):
             if node.args:
                self._check_thread(node.args[0]) 
          
-         elif node.func.attr == "submit" or node.func.attr == "map":
+         elif node.func.attr in ("submit", "map", 
+                                 "imap", "imap_unordered", "starmap", "apply_async"):
             if node.args:
                self._check_executor(node.args[0], node.func.value)
 
@@ -1065,13 +1086,13 @@ class CriticalPass:
       if shared_reads:
          print("   Reads shared variables:")
          for var in shared_reads:
-            print(f"    {var} [{self._classify_variable(var)}]")
+            print(f"      {var} [{self._classify_variable(var)}]")
          print() 
             
       if shared_writes:
          print("   Writes shared variables:")
          for var in shared_writes:
-            print(f"    {var} [{self._classify_variable(var)}]")
+            print(f"      {var} [{self._classify_variable(var)}]")
          print() 
 
       if calls:
@@ -1082,9 +1103,13 @@ class CriticalPass:
       other_writers = [t for t in writers if t != current]
 
       if other_readers:
-         print(f"      Other threads reading {var}: {other_readers}")
+         print(f"         Other readings of {var}:")
+         for reader in other_readers:
+            print(f"            - {reader} reads {var} in lines {[n.lineno for n in readers[reader]]}")
       if other_writers:
-         print(f"      Other threads writing {var}: {other_writers}")
+         print(f"         Other writings of {var}:")
+         for writer in other_writers:
+            print(f"            - {writer} writes {var} in lines {[n.lineno for n in writers[writer]]}")
       if other_readers or other_writers:
          print()
          
@@ -1140,7 +1165,8 @@ class CriticalPass:
                found_bad_var = True
                print(f"      Unprotected read of {var} in line {node.lineno}")
 
-         self._print_other_threads(var, target.name, readers, writers)
+         if found_bad_var:
+            self._print_other_threads(var, target.name, readers, writers)
 
       for var in shared_writes:
          shared_info = self.model.shared_vars.get(var)
