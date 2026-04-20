@@ -40,9 +40,10 @@ class ProgramModel:
       self.method_to_class : dict[str, str] = {}
       self.class_methods: dict[str, set[str]] = {}
       self.class_attrs: dict[str, ast.AST] = {}
+      self.thread_subclasses: set[str] = set()
       
       # Data about threads and their accesses
       self.executors: dict[str, set[ast.AST]] = {}
       self.thread_targets : list[ThreadTarget]= []
-      self.seen_targets : set = set()
+      self.seen_targets : set[str] = set()
       self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}

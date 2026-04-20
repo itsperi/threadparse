@@ -69,6 +69,12 @@ class SymbolPass(PCNodeVisitor):
    def visit_ClassDef(self, node):
       previous_class = self.current_class
       self.current_class = node.name
+
+      for base in node.bases:
+        if self._is_thread_base(base):
+            self.model.thread_subclasses.add(node.name)
+            break
+         
       self.generic_visit(node)
       self.current_class = previous_class
 
@@ -136,7 +142,8 @@ class SymbolPass(PCNodeVisitor):
                      .setdefault(name, set()) \
                      .add(node.value)
                
-      if self.current_class and self.current_function:
+      if self.current_class and self.current_function \
+      and self.current_function != "__init__":
          for target in node.targets:
             if (isinstance(target, ast.Attribute) 
             and isinstance(target.value, ast.Name)
@@ -174,6 +181,17 @@ class SymbolPass(PCNodeVisitor):
             names.extend(self._extract_names(elt))
          return names
       return []
+   
+   def _is_thread_base(self, node):
+      if isinstance(node, ast.Name) and node.id == "Thread":
+         return True
+      elif isinstance(node, ast.Attribute) and node.attr == "Thread":
+         return True
+      # Assumes the parent class is defined first, and in the same file
+      elif isinstance(node, ast.Name) and node.id in self.model.thread_subclasses:
+         return True
+      else:
+         return False
 
 '''
 This pass of the AST is meant to gather types of
@@ -384,7 +402,7 @@ class ScopePass(PCNodeVisitor):
       enclosing = self.current_scope()
       if enclosing is not None:
          enclosing.locals.update(comp_scope.locals)
-         
+
 '''
 This pass of the AST is meant to gather 
 info about which functions are designated 
@@ -400,6 +418,21 @@ class ThreadPass(PCNodeVisitor):
       self.current_class = node.name
       self.generic_visit(node)
       self.current_class = previous
+      
+   def visit_FunctionDef(self, node):
+      if (self.current_class
+      and self.current_class in self.model.thread_subclasses
+      and node.name == "run"):
+         qualified_name = f"{self.current_class}.run"
+         if qualified_name not in self.model.seen_targets \
+         and qualified_name in self.model.functions:
+            target = ThreadTarget(qualified_name, self.current_class, node)
+            self.model.thread_targets.append(target)
+            self.model.seen_targets.add(qualified_name)
+
+      self.generic_visit(node)
+
+   visit_AsyncFunctionDef = visit_FunctionDef
       
    def _check_threading(self, node, kw):
       if kw.arg == "target":
@@ -473,9 +506,14 @@ class ThreadPass(PCNodeVisitor):
 
       if isinstance(node, ast.Name):
          return node.id
+      
+      if isinstance(node, ast.Lambda):
+         body = node.body
+         if isinstance(body, ast.Call):
+            return self._qualify(body.func)
 
       return None
-   
+
 '''
 This pass of the AST is meant to 
 build a call graph so we can 
@@ -540,23 +578,23 @@ class ThreadExpansion:
         self.model = model
 
     def expand(self):
-        worklist = [t.name for t in self.model.thread_targets]
-        visited = set(worklist)
+      worklist = [t.name for t in self.model.thread_targets]
+      visited = set(worklist)
 
-        while worklist:
-            current = worklist.pop()
+      while worklist:
+         current = worklist.pop()
 
-            for callee in self.model.call_graph.get(current, []):
-                # Only consider known functions
-               if callee in self.model.functions and callee not in visited:
-                  visited.add(callee)
-                  worklist.append(callee)
+         for callee in self.model.call_graph.get(current, []):
+            # Only consider known functions
+            if callee in self.model.functions and callee not in visited:
+               visited.add(callee)
+               worklist.append(callee)
 
-                  # Add as synthetic thread target
-                  class_name = self.model.method_to_class.get(callee)
-                  self.model.thread_targets.append(
-                     ThreadTarget(callee, class_name, self.model.functions[callee])
-                  )                    
+               # Add as synthetic thread target
+               class_name = self.model.method_to_class.get(callee)
+               self.model.thread_targets.append(
+                  ThreadTarget(callee, class_name, self.model.functions[callee])
+               )                    
 
 # We only care about list, set, and dict mutations
 MUTATING_METHODS = {
@@ -674,13 +712,12 @@ class TargetPass(PCNodeVisitor):
    # mutating a shared data structure
    def visit_Call(self, node):
       func_name = None
-      # Case 1: func()
+      
       if isinstance(node.func, ast.Name):
          func_name = node.func.id
          if func_name in MUTATING_METHODS:
             self.calls[func_name].append(node)
 
-      # Case 2: obj.method()
       elif isinstance(node.func, ast.Attribute):
          func_name = self.get_full_attr_name(node.func)
          if func_name and func_name.startswith("self.") and self.class_name:
@@ -838,7 +875,6 @@ class SharedUpdate(PCNodeVisitor):
                sibling_key = f"{tname}::{method}"
                self.var_writes[var][sibling_key].extend(nodes)
                
-      # We need to consider main thread scope
       for fname, fnode in self.model.functions.items():
          if fname in target_names or fname.endswith(".__init__"):
                continue
@@ -853,6 +889,10 @@ class SharedUpdate(PCNodeVisitor):
                self.var_writes[var][f"{fname}"].extend(nodes)
          for var, nodes in parser.reads.items():
                self.var_reads[var][f"{fname}"].extend(nodes)
+               
+      # We need to consider main thread scope
+      for var, node in self.model.module_vars.items():
+         self.var_writes[var]["__main__"].append(node)
 
    def _update(self):
       shared = {}
@@ -1081,7 +1121,7 @@ class CriticalPass:
       return {func for func in target.calls if not self._is_protected(func)}
    
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
-      print(f"\nThread routine: {target.name}")
+      print(f"\n Thread routine: {target.name}")
       
       if shared_reads:
          print("   Reads shared variables:")
@@ -1135,13 +1175,6 @@ class CriticalPass:
                if not self._is_protected(node): 
                   found_bad_call = True
                   print(f"      Unprotected call  of {func} in line {node.lineno}")
-
-      # for func, nodes in target.calls.items():
-      #    for node in nodes:
-      #          if not self._is_protected(node):
-      #             if func in unprotected_calls:
-      #                print(f"      Unprotected call  to {func} in line {node.lineno}")
-      #                found_bad_call = True
 
       return found_bad_call
          
