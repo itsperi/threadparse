@@ -94,22 +94,23 @@ to files/*.py) and runs an analysis on each
 '''
 def parse_files(paths: list[str]):
    unsafe_files = []
+   safe_files   = []
 
    for path in paths:
-      tree = util.build_ast_from_filepath(path)
-
-      analyzer = Analyzer(tree, name=path)
-      result = analyzer.run()
+      tree   = util.build_ast_from_filepath(path)
+      result = Analyzer(tree, name=path).run()
 
       if result and result["unsafe"]:
          unsafe_files.append(path)
+      elif result:
+         safe_files.append(path)
 
    print("\n====================")
-   
+
    if unsafe_files:
       print("Unsafe threading detected in:")
       for f in unsafe_files:
-         print(f" - {f}")
+         print(f"  - {f}")
    else:
       print("No unsafe threading detected.")
 

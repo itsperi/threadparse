@@ -12,6 +12,8 @@ class ThreadTarget:
    # If the target belongs to a class, we need to analyze instance state
    sibling_writes: dict[str, dict[str, list]] = field(default_factory=dict)
    sibling_reads: dict[str, dict[str, list]] = field(default_factory=dict)
+   parent_target: str = None
+   root_target: str = None
       
 class Scope:
    def __init__(self, parent=None):
@@ -45,5 +47,7 @@ class ProgramModel:
       # Data about threads and their accesses
       self.executors: dict[str, set[ast.AST]] = {}
       self.thread_targets : list[ThreadTarget]= []
+      self.thread_vars : set[str] = set()
       self.seen_targets : set[str] = set()
+      self.thread_start_lines : list[int] = []
       self.shared_vars : dict[str, dict[str, list[ast.AST]]] = {}

@@ -2,7 +2,7 @@ import ast
 from model import ThreadTarget, Scope
 from collections import defaultdict
 
-COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
+
 
 '''
 Custom NodeVisitor that enables parent tracking for upwards recursion
@@ -141,9 +141,18 @@ class SymbolPass(PCNodeVisitor):
                   self.model.executors \
                      .setdefault(name, set()) \
                      .add(node.value)
-               
-      if self.current_class and self.current_function \
-      and self.current_function != "__init__":
+                     
+         is_thread = (
+            isinstance(func, ast.Name) and func.id == "Thread"
+         ) or (
+            isinstance(func, ast.Attribute) and func.attr == "Thread"
+         )
+         if is_thread:
+            for target in node.targets:
+               for name in self._extract_names(target):
+                  self.model.thread_vars.add(name)
+                           
+      if self.current_class and self.current_function:
          for target in node.targets:
             if (isinstance(target, ast.Attribute) 
             and isinstance(target.value, ast.Name)
@@ -193,6 +202,8 @@ class SymbolPass(PCNodeVisitor):
       else:
          return False
 
+COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
+
 '''
 This pass of the AST is meant to gather types of
 variables created in the program so we can filter
@@ -226,27 +237,56 @@ class TypeInferencePass(PCNodeVisitor):
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.var_types[name] = inferred
+            # Handle self.x = [] / self.x = {} / self.x = set()
+            if (isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            and self.current_class):
+               qualified = f"{self.current_class}.{target.attr}"
+               self.model.var_types[qualified] = inferred
+               self.model.var_types[target.attr] = inferred
       self.generic_visit(node)
 
    def visit_AnnAssign(self, node):
-      # Handles: x: list = []
       inferred = self._infer(node.value) if node.value else self._infer_annotation(node.annotation)
-      if inferred and isinstance(node.target, ast.Name):
-         self.model.var_types[node.target.id] = inferred
+      if inferred:
+         if isinstance(node.target, ast.Name):
+            self.model.var_types[node.target.id] = inferred
+            # Also store qualified name if we're in a class
+            if self.current_class:
+               qualified = f"{self.current_class}.{node.target.id}"
+               self.model.var_types[qualified] = inferred
+         elif (isinstance(node.target, ast.Attribute)
+         and isinstance(node.target.value, ast.Name)
+         and node.target.value.id == "self"
+         and self.current_class):
+            qualified = f"{self.current_class}.{node.target.attr}"
+            self.model.var_types[qualified] = inferred
+            self.model.var_types[node.target.attr] = inferred
       self.generic_visit(node)
 
    def _infer(self, node):
       if node is None:
          return None
-      if isinstance(node, ast.List):
+      if isinstance(node, (ast.List, ast.ListComp)):
          return "list"
-      if isinstance(node, ast.Dict):
+      if isinstance(node, (ast.Dict, ast.DictComp)):
          return "dict"
-      if isinstance(node, ast.Set):
+      if isinstance(node, (ast.Set, ast.SetComp)):
          return "set"
       # Constructor calls: list(), dict(), set(), defaultdict(list), etc.
       if isinstance(node, ast.Call):
          return self._infer_call(node)
+      if isinstance(node, ast.Subscript):
+         if isinstance(node.slice, ast.Slice):
+            return self._infer(node.value)
+      if isinstance(node, ast.BinOp):
+         if isinstance(node.op, ast.Add):
+            left = self._infer(node.left)
+            if left: return left
+            return self._infer(node.right)
+         if isinstance(node.op, ast.BitOr):
+            return self._infer(node.left) or self._infer(node.right)
       return None
 
    def _infer_call(self, node):
@@ -271,6 +311,14 @@ class TypeInferencePass(PCNodeVisitor):
       if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
          if node.value.id in {"List", "Dict", "Set", "list", "dict", "set"}:
             return node.value.id.lower()
+         if node.value.id == "Optional":
+            return self._infer_annotation(node.slice)
+      # Handles union annotations like x: list | None
+      if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+         left = self._infer_annotation(node.left)
+         if left: return left
+         return self._infer_annotation(node.right)
+
       return None
 
    def _extract_names(self, node):
@@ -398,10 +446,6 @@ class ScopePass(PCNodeVisitor):
             comp_scope.locals.add(name)
       self.generic_visit(node)
       self.scope_stack.pop()
-      
-      enclosing = self.current_scope()
-      if enclosing is not None:
-         enclosing.locals.update(comp_scope.locals)
 
 '''
 This pass of the AST is meant to gather 
@@ -426,7 +470,11 @@ class ThreadPass(PCNodeVisitor):
          qualified_name = f"{self.current_class}.run"
          if qualified_name not in self.model.seen_targets \
          and qualified_name in self.model.functions:
-            target = ThreadTarget(qualified_name, self.current_class, node)
+            target = ThreadTarget(name=qualified_name,
+                                  class_name=self.current_class,
+                                  node=node,
+                                  parent_target=None,
+                                  root_target=qualified_name)
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(qualified_name)
 
@@ -440,7 +488,11 @@ class ThreadPass(PCNodeVisitor):
          # Only targets known as defined functions are added
          if name and name not in self.model.seen_targets \
          and name in self.model.functions.keys():
-            target = ThreadTarget(name, self.current_class, node)
+            target = ThreadTarget(name=name, 
+                                   class_name=self.current_class, 
+                                   node=node,
+                                   parent_target=None,
+                                   root_target=name)
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(name)
    
@@ -449,7 +501,11 @@ class ThreadPass(PCNodeVisitor):
       name = self._qualify(arg)         
       if name and name not in self.model.seen_targets \
       and name in self.model.functions.keys():
-         target = ThreadTarget(name, self.current_class, arg)
+         target = ThreadTarget(name=name, 
+                               class_name=self.current_class, 
+                               node=arg,
+                               parent_target=None,
+                               root_target=name)
          self.model.thread_targets.append(target)
          self.model.seen_targets.add(name)
          
@@ -460,7 +516,11 @@ class ThreadPass(PCNodeVisitor):
          # Check if the call is on a known executor
          executor_name = self._qualify(executor_node) if executor_node else None
          if executor_name and executor_name in self.model.executors:
-               target = ThreadTarget(name, self.current_class, arg)
+               target = ThreadTarget(name=name, 
+                                      class_name=self.current_class, 
+                                      node=arg,
+                                      parent_target=None,
+                                      root_target=name)
                self.model.thread_targets.append(target)
                self.model.seen_targets.add(name)
 
@@ -486,6 +546,12 @@ class ThreadPass(PCNodeVisitor):
                                  "imap", "imap_unordered", "starmap", "apply_async"):
             if node.args:
                self._check_executor(node.args[0], node.func.value)
+               
+         elif node.func.attr == "start":
+            receiver = node.func.value
+            if isinstance(receiver, ast.Name):
+               if receiver.id in self.model.thread_vars:
+                  self.model.thread_start_lines.append(node.lineno)
 
       self.generic_visit(node)
       
@@ -593,7 +659,10 @@ class ThreadExpansion:
                # Add as synthetic thread target
                class_name = self.model.method_to_class.get(callee)
                self.model.thread_targets.append(
-                  ThreadTarget(callee, class_name, self.model.functions[callee])
+                  ThreadTarget(name=callee, 
+                               class_name=class_name,
+                               node=self.model.functions[callee],
+                               parent_target=current)
                )                    
 
 # We only care about list, set, and dict mutations
@@ -730,6 +799,9 @@ class TargetPass(PCNodeVisitor):
                obj_type = self.var_types.get(obj.id)
                if obj_type in {"list", "set", "dict"} or obj_type is None:
                   self.calls[func_name].append(node)
+                  if self.scope and obj.id not in self.scope.locals:
+                     self.writes[obj.id].append(node)
+                     
             elif isinstance(obj, ast.Attribute):
                # handles self.clients.append(), self.data.add(), etc.
                full_obj = self.get_full_attr_name(obj)
@@ -746,26 +818,40 @@ class TargetPass(PCNodeVisitor):
       if isinstance(node.ctx, ast.Store):
          if isinstance(node.value, ast.Name):
             self.writes[node.value.id].append(node)
-      elif isinstance(node.value, ast.Attribute):   
-         full_name = self.get_full_attr_name(node.value)
-         if full_name and full_name.startswith("self.") and self.class_name:
+         elif isinstance(node.value, ast.Attribute):   
+            full_name = self.get_full_attr_name(node.value)
+            if full_name and full_name.startswith("self.") and self.class_name:
                full_name = f"{self.class_name}.{full_name[5:]}"
-         if full_name:
+            if full_name:
                self.writes[full_name].append(node)
             
       elif isinstance(node.ctx, ast.Load):
          if isinstance(node.value, ast.Name):
-            parent = getattr(node, "parent", None)
-            if not isinstance(parent, ast.Assign):
-               self.reads[node.value.id].append(node)
+            self.reads[node.value.id].append(node)
          elif isinstance(node.value, ast.Attribute):
             full_name = self.get_full_attr_name(node.value)
             if full_name and full_name.startswith("self.") and self.class_name:
                full_name = f"{self.class_name}.{full_name[5:]}"
             if full_name:
-               parent = getattr(node, "parent", None)
-               if not isinstance(parent, ast.Assign):
-                  self.reads[full_name].append(node)
+               self.reads[full_name].append(node)
+               
+   def visit_Delete(self, node):
+      for target in node.targets:
+         # del list[x] or del list[:]
+         if isinstance(target, ast.Subscript):
+            if isinstance(target.value, ast.Name):
+               self.writes[target.value.id].append(node)
+            elif isinstance(target.value, ast.Attribute):
+               full_name = self.get_full_attr_name(target.value)
+               if full_name and full_name.startswith("self.") and self.class_name:
+                  full_name = f"{self.class_name}.{full_name[5:]}"
+               if full_name:
+                  self.writes[full_name].append(node)
+         # del list  (the variable itself)
+         elif isinstance(target, ast.Name):
+            self.writes[target.id].append(node)
+      self.generic_visit(node)
+                  
       self.generic_visit(node)
 
 
@@ -802,6 +888,25 @@ info about instance attributes
 class ClassResolutionPass(PCNodeVisitor):
    def __init__(self, model):
       self.model = model
+      
+   def _is_reachable_from_other_thread(self, method, target):
+      # A method is reachable from another thread if it's called by the target
+      # or if it's called by a method that is reachable from the target
+      visited = set()
+      to_visit = [target.name]
+
+      while to_visit:
+         current = to_visit.pop()
+         if current in visited:
+            continue
+         visited.add(current)
+
+         for callee in self.model.call_graph.get(current, []):
+            if callee == method:
+               return True
+            to_visit.append(callee)
+
+      return False
 
    def resolve_classes(self):
       for target in self.model.thread_targets:
@@ -817,6 +922,9 @@ class ClassResolutionPass(PCNodeVisitor):
 
             # Skip the target itself and __init__
             if qualified == target.name or method == "__init__":
+               continue
+            
+            if not self._is_reachable_from_other_thread(qualified, target):
                continue
 
             method_node = self.model.functions.get(qualified)
@@ -857,12 +965,39 @@ class SharedUpdate(PCNodeVisitor):
       self.var_writes: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
       # May God smite my children for what I just wrote
       
+   def _reachable_from_targets(self):
+      reachable = set()
+      stack = [t.name for t in self.model.thread_targets]
+      
+      while stack:
+         current = stack.pop()
+         if current in reachable:
+            continue
+         reachable.add(current)
+         
+         for callee in self.model.call_graph.get(current, []):
+            stack.append(callee)
+
+      return reachable
+   
+   def _is_safely_initialized(self, var, writer_targets, earliest_start):
+      if writer_targets - {"__main__"}:
+         return False
+
+      main_nodes = self.var_writes[var].get("__main__", [])
+      if not main_nodes:
+         return False
+
+      # Every write must occur before the first thread.start()
+      return all(n.lineno < earliest_start for n in main_nodes)
+      
    def _populate(self):
       # In each target, we have dicts of reads/writes: var -> list of nodes
       target_names = {t.name for t in self.model.thread_targets}
+      reachable = self._reachable_from_targets()
       
       for target in self.model.thread_targets:
-         tname = target.name         
+         tname = target.parent_target if target.parent_target is not None else target.name
          for var, nodes in target.reads.items():
             self.var_reads[var][tname].extend(nodes)
             
@@ -877,12 +1012,15 @@ class SharedUpdate(PCNodeVisitor):
                
       for fname, fnode in self.model.functions.items():
          if fname in target_names or fname.endswith(".__init__"):
-               continue
+            continue
+         if fname in reachable:
+            continue
+         
          scope = self.model.function_scopes.get(fname)
          class_name = self.model.method_to_class.get(fname)
          parser = TargetPass(scope=scope, 
-                              class_name=class_name,
-                              var_types=self.model.var_types)
+                             class_name=class_name,
+                             var_types=self.model.var_types)
          parser.visit(fnode)
 
          for var, nodes in parser.writes.items():
@@ -895,6 +1033,7 @@ class SharedUpdate(PCNodeVisitor):
          self.var_writes[var]["__main__"].append(node)
 
    def _update(self):
+      earliest_start = min(self.model.thread_start_lines, default=float('inf'))
       shared = {}
       all_vars = set(self.var_reads.keys()) | set(self.var_writes.keys())
       
@@ -905,6 +1044,9 @@ class SharedUpdate(PCNodeVisitor):
          
          # We should include the nodes themselves
          if len(involved_targets) > 1 and len(writer_targets) > 0:
+            if self._is_safely_initialized(var, writer_targets, earliest_start):
+               continue
+            
             shared[var] = {
                "reads": {t: self.var_reads[var][t] for t in reader_targets},
                "writes": {t: self.var_writes[var][t] for t in writer_targets}
@@ -1047,8 +1189,7 @@ class CriticalPass:
       return (
          name in self.model.globals or 
          name in self.model.nonlocals or
-         name in self.model.module_vars or
-         name in self.model.class_attrs
+         name in self.model.module_vars
       )
    
    def _is_shared_variable(self, var, scope: Scope):
@@ -1159,8 +1300,8 @@ class CriticalPass:
 
    def _analyze_calls(self, target, unprotected_calls):
       found_bad_call = False
-      
-      scope = self.model.function_scopes.get(target.name)
+      tname = target.parent_target if target.parent_target is not None else target.name
+      scope = self.model.function_scopes.get(tname)
       for func, nodes in target.calls.items():
          if func not in unprotected_calls:
                continue
@@ -1180,46 +1321,59 @@ class CriticalPass:
          
    def _analyze_shared_variables(self, target, shared_reads, shared_writes):
       found_bad_var = False
+      tname = target.parent_target if target.parent_target is not None else target.name
       
       for var in shared_reads:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
-            for node in target.reads.get(var, []):
-               if not self._is_protected(node):
-                  # found_bad_var = True
-                  print(f"      Unprotected read of {var} in line {node.lineno}")
+            # for node in target.reads.get(var, []):
+            #    if not self._is_protected(node):
+            #       # found_bad_var = True
+            #       print(f"      Unprotected read of {var} in line {node.lineno}")
             continue
                   
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
-         for node in readers[target.name]:
+         for node in readers.get(tname, []):
             if not self._is_protected(node):
                found_bad_var = True
-               print(f"      Unprotected read of {var} in line {node.lineno}")
+               var_type = self.model.var_types.get(var)
+               match var_type:
+                  case "list": kind = " SHARED LIST "
+                  case "set":  kind = " SHARED SET "
+                  case "dict": kind = " SHARED DICT "
+                  case _:      kind = " SC "
+               print(f"      Unprotected read of {var} in line {node.lineno} [{kind}]")
 
          if found_bad_var:
-            self._print_other_threads(var, target.name, readers, writers)
+            self._print_other_threads(var, tname, readers, writers)
 
       for var in shared_writes:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
-            for node in target.writes.get(var, []):
-               if not self._is_protected(node):
-                  found_bad_var = True
-                  print(f"      Unprotected write of {var} in line {node.lineno}")
+            # for node in target.writes.get(var, []):
+            #    if not self._is_protected(node):
+            #       found_bad_var = True
+            #       print(f"      Unprotected write of {var} in line {node.lineno}")
             continue
                   
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
-         if target.name in writers:
-               for node in writers[target.name]:
-                  if not self._is_protected(node):
-                     found_bad_var = True
-                     print(f"      Unprotected write of {var} in line {node.lineno}")
+         if tname in writers:
+            for node in writers.get(tname, []):
+               if not self._is_protected(node):
+                  found_bad_var = True
+                  var_type = self.model.var_types.get(var)
+                  match var_type:
+                     case "list": kind = " SHARED LIST "
+                     case "set":  kind = " SHARED SET "
+                     case "dict": kind = " SHARED DICT "
+                     case _:      kind = " SC "
+                  print(f"      Unprotected write of {var} in line {node.lineno} [{kind}]")
 
-               self._print_other_threads(var, target.name, readers, writers)
+            self._print_other_threads(var, tname, readers, writers)
                
       return found_bad_var
  
