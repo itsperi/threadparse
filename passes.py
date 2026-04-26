@@ -157,10 +157,11 @@ class SymbolPass(PCNodeVisitor):
                for name in self._extract_names(target):
                   self.model.thread_vars.add(name)
                   
+         # TODO: move to type inference pass
          is_queue = (
-            isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue"}
+            isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue", "PriorityQueue"}
          ) or (
-            isinstance(func, ast.Attribute) and func.attr in {"Queue", "SimpleQueue"}
+            isinstance(func, ast.Attribute) and func.attr in {"Queue", "SimpleQueue", "PriorityQueue"}
          )
          if is_queue:
             for target in node.targets:
@@ -280,6 +281,7 @@ class TypeInferencePass(PCNodeVisitor):
             self.model.var_types[node.target.attr] = inferred
       self.generic_visit(node)
 
+   # TODO: handle queue case
    def _infer(self, node):
       if node is None:
          return None
@@ -687,7 +689,7 @@ MUTATING_METHODS = {
    "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update",  # set
    "clear", "pop", "popitem", "setdefault", "update",  # dict
 }
-
+QUEUE_TYPES = {"Queue", "SimpleQueue", "PriorityQueue"}
 '''
 This pass of the AST is meant to target specifically the 
 functions designated as Thread targets and gather information
@@ -695,13 +697,14 @@ about the variable reads, writes, function calls with
 potential side effects, and subscript/attribute accesses 
 '''
 class TargetPass(PCNodeVisitor):
-   def __init__(self, scope: Scope = None, class_name: str = None, var_types = None):
-      self.reads = defaultdict(list)
-      self.writes = defaultdict(list)
-      self.calls = defaultdict(list)
+   def __init__(self, model = None, scope: Scope = None, class_name: str = None, var_types = None):
+      self.model = model
       self.scope = scope
       self.class_name = class_name
       self.var_types = var_types
+      self.reads = defaultdict(list)
+      self.writes = defaultdict(list)
+      self.calls = defaultdict(list)
       
    # For attribute accesses, we need to 
    # extract the entire chain: class.list.append()
@@ -821,19 +824,21 @@ class TargetPass(PCNodeVisitor):
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                obj_type = self.var_types.get(obj.id)
-               if obj_type in {"list", "set", "dict"} or obj_type is None:
+               if obj_type not in QUEUE_TYPES and (obj_type in {"list", "set", "dict"} or obj_type is None):  # ← added guard
                   self.calls[func_name].append(node)
                   if self.scope and obj.id not in self.scope.locals:
                      self.writes[obj.id].append(node)
-                     
+                        
             elif isinstance(obj, ast.Attribute):
-               # handles self.clients.append(), self.data.add(), etc.
                full_obj = self.get_full_attr_name(obj)
                if full_obj and full_obj.startswith("self.") and self.class_name:
                   full_obj = f"{self.class_name}.{full_obj[5:]}"
                if full_obj:
-                  self.calls[full_obj + "." + method].append(node)
-                  self.writes[full_obj].append(node)  # also record as a write
+                  if self.var_types.get(full_obj) in QUEUE_TYPES:  # ← added guard
+                     pass
+                  else:
+                     self.calls[full_obj + "." + method].append(node)
+                     self.writes[full_obj].append(node)
 
       self.generic_visit(node)
       
@@ -894,7 +899,8 @@ class TargetUpdate:
          target_scope = self.model.function_scopes.get(target.name)
          target_class = target.class_name
          
-         parser = TargetPass(scope = target_scope, 
+         parser = TargetPass(model = self.model, 
+                             scope = target_scope, 
                              class_name = target_class,
                              var_types = self.model.var_types)
          parser.visit(target_node)
@@ -955,7 +961,10 @@ class ClassResolutionPass(PCNodeVisitor):
                continue
 
             scope = self.model.function_scopes.get(qualified)
-            parser = TargetPass(scope=scope, class_name=class_name, var_types=self.model.var_types)
+            parser = TargetPass(model=self.model, 
+                                scope=scope, 
+                                class_name=class_name, 
+                                var_types=self.model.var_types)
             parser.visit(method_node)
 
             # Merge r/w from sibling methods into the target's writes
