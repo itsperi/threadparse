@@ -3,7 +3,6 @@ from model import ThreadTarget, Scope
 from collections import defaultdict
 
 
-
 '''
 Custom NodeVisitor that enables parent tracking for upwards recursion
 '''
@@ -86,6 +85,8 @@ class SymbolPass(PCNodeVisitor):
          qualified_name = f"{self.current_class}.{node.name}"
       else:
          qualified_name = node.name
+      self.current_function = qualified_name
+      
       self.model.functions[qualified_name] = node
       
       # If a function is defined within a class, 
@@ -146,11 +147,25 @@ class SymbolPass(PCNodeVisitor):
             isinstance(func, ast.Name) and func.id == "Thread"
          ) or (
             isinstance(func, ast.Attribute) and func.attr == "Thread"
+         ) or (
+            isinstance(func, ast.Name) and func.id in self.model.thread_subclasses
+         ) or (
+            isinstance(func, ast.Attribute) and func.attr in self.model.thread_subclasses
          )
          if is_thread:
             for target in node.targets:
                for name in self._extract_names(target):
                   self.model.thread_vars.add(name)
+                  
+         is_queue = (
+            isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue"}
+         ) or (
+            isinstance(func, ast.Attribute) and func.attr in {"Queue", "SimpleQueue"}
+         )
+         if is_queue:
+            for target in node.targets:
+               for name in self._extract_names(target):
+                  self.model.var_types[name] = "queue"
                            
       if self.current_class and self.current_function:
          for target in node.targets:
@@ -567,7 +582,7 @@ class ThreadPass(PCNodeVisitor):
                   
          for _class, methods in self.model.class_methods.items():
             if method in methods:
-               return f"{_class}.{method}"
+               return f"{self.current_class}.{method}" if self.current_class else method
          return method
 
       if isinstance(node, ast.Name):
@@ -662,7 +677,8 @@ class ThreadExpansion:
                   ThreadTarget(name=callee, 
                                class_name=class_name,
                                node=self.model.functions[callee],
-                               parent_target=current)
+                               parent_target=current,
+                               root_target=worklist[0] if worklist else current)
                )                    
 
 # We only care about list, set, and dict mutations
@@ -747,9 +763,17 @@ class TargetPass(PCNodeVisitor):
          if isinstance(target.value, ast.Name):
             self.reads[target.value.id].append(node)
             self.writes[target.value.id].append(node)
+         elif isinstance(target.value, ast.Attribute):
+            full_name = self.get_full_attr_name(target.value)
+            if full_name and full_name.startswith("self.") and self.class_name:
+               full_name = f"{self.class_name}.{full_name[5:]}"
+            if full_name:
+               self.reads[full_name].append(node)
+               self.writes[full_name].append(node)
                
       # Don't call generic_visit, we'll double count
       # self.generic_visit(node)     
+      self.visit(node.value)
       
    # For attribute accesses like class.x
    def visit_Attribute(self, node):
@@ -850,8 +874,7 @@ class TargetPass(PCNodeVisitor):
          # del list  (the variable itself)
          elif isinstance(target, ast.Name):
             self.writes[target.id].append(node)
-      self.generic_visit(node)
-                  
+
       self.generic_visit(node)
 
 
@@ -1004,11 +1027,11 @@ class SharedUpdate(PCNodeVisitor):
          for var, nodes in target.writes.items():
             self.var_writes[var][tname].extend(nodes)
             
-         for var, method_nodes in target.sibling_writes.items():
-            for method, nodes in method_nodes.items():
-               # Key by "ClassName.method" so the source is identifiable
-               sibling_key = f"{tname}::{method}"
-               self.var_writes[var][sibling_key].extend(nodes)
+         # for var, method_nodes in target.sibling_writes.items():
+         #    for method, nodes in method_nodes.items():
+         #       # Key by "ClassName.method" so the source is identifiable
+         #       sibling_key = f"{tname}::{method}"
+         #       self.var_writes[var][sibling_key].extend(nodes)
                
       for fname, fnode in self.model.functions.items():
          if fname in target_names or fname.endswith(".__init__"):
@@ -1259,7 +1282,7 @@ class CriticalPass:
       return "OTHER"
    
    def _get_unprotected_calls(self, target):
-      return {func for func in target.calls if not self._is_protected(func)}
+      return {func for func, nodes in target.calls.items() if any(not self._is_protected(node) for node in nodes)}
    
    def _print_thread_header(self, target, shared_reads, shared_writes, calls):
       print(f"\n Thread routine: {target.name}")
@@ -1331,7 +1354,7 @@ class CriticalPass:
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
-         for node in readers.get(tname, []):
+         for node in readers.get(f"{tname}", []):
             if not self._is_protected(node):
                var_type = self.model.var_types.get(var)
                match var_type:
