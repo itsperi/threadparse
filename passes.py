@@ -1320,62 +1320,54 @@ class CriticalPass:
       return found_bad_call
          
    def _analyze_shared_variables(self, target, shared_reads, shared_writes):
-      found_bad_var = False
+      violations = set()
       tname = target.parent_target if target.parent_target is not None else target.name
       
       for var in shared_reads:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
-            # for node in target.reads.get(var, []):
-            #    if not self._is_protected(node):
-            #       # found_bad_var = True
-            #       print(f"      Unprotected read of {var} in line {node.lineno}")
             continue
-                  
+                     
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
          for node in readers.get(tname, []):
             if not self._is_protected(node):
-               found_bad_var = True
                var_type = self.model.var_types.get(var)
                match var_type:
-                  case "list": kind = " SHARED LIST "
-                  case "set":  kind = " SHARED SET "
-                  case "dict": kind = " SHARED DICT "
-                  case _:      kind = " SC "
+                  case "list": kind = "SHARED LIST"
+                  case "set":  kind = "SHARED SET"
+                  case "dict": kind = "SHARED DICT"
+                  case _:      kind = "SC"
+               violations.add(kind)
                print(f"      Unprotected read of {var} in line {node.lineno} [{kind}]")
 
-         if found_bad_var:
+         if violations:
             self._print_other_threads(var, tname, readers, writers)
 
       for var in shared_writes:
          shared_info = self.model.shared_vars.get(var)
          if not shared_info:
-            # for node in target.writes.get(var, []):
-            #    if not self._is_protected(node):
-            #       found_bad_var = True
-            #       print(f"      Unprotected write of {var} in line {node.lineno}")
             continue
-                  
+                     
          readers = shared_info["reads"]
          writers = shared_info["writes"]
 
          if tname in writers:
             for node in writers.get(tname, []):
                if not self._is_protected(node):
-                  found_bad_var = True
                   var_type = self.model.var_types.get(var)
                   match var_type:
-                     case "list": kind = " SHARED LIST "
-                     case "set":  kind = " SHARED SET "
-                     case "dict": kind = " SHARED DICT "
-                     case _:      kind = " SC "
+                     case "list": kind = "SHARED LIST"
+                     case "set":  kind = "SHARED SET"
+                     case "dict": kind = "SHARED DICT"
+                     case _:      kind = "SC"
+                  violations.add(kind)
                   print(f"      Unprotected write of {var} in line {node.lineno} [{kind}]")
 
-            self._print_other_threads(var, tname, readers, writers)
-               
-      return found_bad_var
+               self._print_other_threads(var, tname, readers, writers)
+                  
+      return violations
  
    def analyze_shared_vars(self):
       if not self.model.thread_targets:
@@ -1383,7 +1375,8 @@ class CriticalPass:
       
       print(f"\nAnalyzing threads in program: {self.model.name}")
       
-      found_bad_var, found_bad_call = False, False
+      all_violations = set()
+      found_bad_call = False
       
       for target in self.model.thread_targets:
          shared_reads, shared_writes = self._get_shared_accesses(target)
@@ -1392,20 +1385,18 @@ class CriticalPass:
          if shared_reads or shared_writes or unprotected_calls:
             self._print_thread_header(target, shared_reads, shared_writes, unprotected_calls)
 
-            found_bad_var = self._analyze_shared_variables(target, shared_reads, shared_writes) or found_bad_var
+            violations = self._analyze_shared_variables(target, shared_reads, shared_writes)
+            all_violations |= violations
             found_bad_call = self._analyze_calls(target, unprotected_calls) or found_bad_call
 
-            if not found_bad_var:
+            if not violations:
                print("      No unprotected variables detected")
-            
             if not found_bad_call:
                print("      No unprotected function calls detected")
-               
          else:
-            self._print_no_shared(target)
+               self._print_no_shared(target)
 
       return {
-               "unsafe": found_bad_var or found_bad_call
-            }  
-                  
-         
+         "unsafe": bool(all_violations) or found_bad_call,
+         "violations": all_violations,
+      }

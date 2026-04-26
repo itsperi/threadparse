@@ -86,6 +86,7 @@ class Analyzer:
       return {
          "name": self.model.name,
          "unsafe": result is not None and result.get("unsafe", False) if isinstance(result, dict) else bool(result),
+         "violations": result.get("violations", set()) if isinstance(result, dict) else set(),
       }
             
 '''
@@ -93,24 +94,23 @@ Takes a list of filepaths (namely ones that lead
 to files/*.py) and runs an analysis on each
 '''
 def parse_files(paths: list[str]):
+   PRECEDENCE = ["SHARED LIST", "SHARED DICT", "SHARED SET", "SC"]
    unsafe_files = []
    safe_files   = []
-
    for path in paths:
       tree   = util.build_ast_from_filepath(path)
       result = Analyzer(tree, name=path).run()
-
       if result and result["unsafe"]:
-         unsafe_files.append(path)
+         unsafe_files.append((path, result.get("violations", set())))
       elif result:
          safe_files.append(path)
 
    print("\n====================")
-
    if unsafe_files:
       print("Unsafe threading detected in:")
-      for f in unsafe_files:
-         print(f"  - {f}")
+      for path, violations in unsafe_files:
+         kinds = [k for k in PRECEDENCE if k in violations]
+         print(f"  - {path} [{', '.join(kinds)}]")
    else:
       print("No unsafe threading detected.")
 
