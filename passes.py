@@ -157,16 +157,16 @@ class SymbolPass(PCNodeVisitor):
                for name in self._extract_names(target):
                   self.model.thread_vars.add(name)
                   
-         # TODO: move to type inference pass
          is_queue = (
             isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue", "PriorityQueue"}
          ) or (
             isinstance(func, ast.Attribute) and func.attr in {"Queue", "SimpleQueue", "PriorityQueue"}
          )
          if is_queue:
+            type_name = func.id if isinstance(func, ast.Name) else func.attr
             for target in node.targets:
                for name in self._extract_names(target):
-                  self.model.var_types[name] = "queue"
+                  self.model.var_types[name] = type_name
                            
       if self.current_class and self.current_function:
          for target in node.targets:
@@ -219,7 +219,7 @@ class SymbolPass(PCNodeVisitor):
          return False
 
 COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
-
+QUEUE_TYPES = {"Queue", "SimpleQueue", "PriorityQueue"}
 '''
 This pass of the AST is meant to gather types of
 variables created in the program so we can filter
@@ -281,7 +281,6 @@ class TypeInferencePass(PCNodeVisitor):
             self.model.var_types[node.target.attr] = inferred
       self.generic_visit(node)
 
-   # TODO: handle queue case
    def _infer(self, node):
       if node is None:
          return None
@@ -313,11 +312,15 @@ class TypeInferencePass(PCNodeVisitor):
             # Normalize defaultdict/OrderedDict()
             return {"defaultdict": "dict", "OrderedDict": "dict",
                   "Counter": "dict"}.get(name, name)
+         if name in QUEUE_TYPES:
+            return name
       elif isinstance(node.func, ast.Attribute):
          # Normalize collections.defaultdict(...)
          if node.func.attr in COLLECTION_CONSTRUCTORS:
             return {"defaultdict": "dict", "OrderedDict": "dict",
                   "Counter": "dict"}.get(node.func.attr, node.func.attr)
+         if node.func.attr in QUEUE_TYPES:
+            return node.func.attr
       return None
 
    def _infer_annotation(self, node):
@@ -689,7 +692,6 @@ MUTATING_METHODS = {
    "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update",  # set
    "clear", "pop", "popitem", "setdefault", "update",  # dict
 }
-QUEUE_TYPES = {"Queue", "SimpleQueue", "PriorityQueue"}
 '''
 This pass of the AST is meant to target specifically the 
 functions designated as Thread targets and gather information
@@ -834,7 +836,11 @@ class TargetPass(PCNodeVisitor):
                if full_obj and full_obj.startswith("self.") and self.class_name:
                   full_obj = f"{self.class_name}.{full_obj[5:]}"
                if full_obj:
-                  if self.var_types.get(full_obj) in QUEUE_TYPES:  # ← added guard
+                  # Check if any prefix resolves to a queue type, e.g. "_HandlerThread._queue.queue"
+                  # should be suppressed because "_HandlerThread._queue" is a Queue
+                  obj_root = ".".join(full_obj.split(".")[:2]) 
+                  if (self.var_types.get(full_obj) in QUEUE_TYPES
+                  or self.var_types.get(obj_root) in QUEUE_TYPES):
                      pass
                   else:
                      self.calls[full_obj + "." + method].append(node)
@@ -881,6 +887,33 @@ class TargetPass(PCNodeVisitor):
             self.writes[target.id].append(node)
 
       self.generic_visit(node)
+      
+   def visit_ListComp(self, node):
+      self._visit_comprehension(node)
+   def visit_SetComp(self, node):
+      self._visit_comprehension(node)
+   def visit_DictComp(self, node):
+      self._visit_comprehension(node)
+   def visit_GeneratorExp(self, node):
+      self._visit_comprehension(node)
+
+   def _visit_comprehension(self, node):
+      saved = set(self.scope.locals)
+      for generator in node.generators:
+         for name in self._extract_names(generator.target):
+            self.scope.locals.add(name)
+      self.generic_visit(node)
+      self.scope.locals = saved
+
+   def _extract_names(self, node):
+      if isinstance(node, ast.Name):
+         return [node.id]
+      elif isinstance(node, (ast.Tuple, ast.List)):
+         names = []
+         for elt in node.elts:
+            names.extend(self._extract_names(elt))
+         return names
+      return []
 
 
 '''

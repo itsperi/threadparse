@@ -107,6 +107,7 @@ def parse_files(paths: list[str]):
 
    print("\n====================")
    if unsafe_files:
+      print(f"{len(unsafe_files)} unsafe file(s) detected:")
       print("Unsafe threading detected in:")
       for path, violations in unsafe_files:
          kinds = [k for k in PRECEDENCE if k in violations]
@@ -143,8 +144,8 @@ def main():
    args = sys.argv
    if len(args) > 1:
       if "--files" in args or "-f" in args:
-         print("Reading files from files/...")
-         files = util.get_filepaths_in_dir("files")
+         print("Reading files from top_1k_repos/...")
+         files = util.get_filepaths_in_dir("top_1k_repos")
          parse_files(files)
             
       # elif "--repos" in args or "-r" in args:

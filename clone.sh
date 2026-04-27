@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
 fi
 
 INPUT_FILE="$1"
-TARGET_DIR="files"
+TARGET_DIR="top_1k_repos"
 
 # Create target directory if it doesn't exist
 mkdir -p "$TARGET_DIR"

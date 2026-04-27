@@ -11,9 +11,13 @@ if it contains the threading library
 def build_ast_from_filepath(filepath: str):
    try:
       with open(filepath) as f:
+         # print(f"Parsing {filepath}...")
          program = f.read()
    except FileNotFoundError:
       print(f"\nThe given file <{filepath}> doesn't exist")
+      return None
+   except Exception as e:
+      print(f"\nThere was an error reading <{filepath}>: {e}")
       return None
    
    try:
