@@ -1,4 +1,4 @@
-import sys
+import sys, json
 import gitutils as util
 from passes import (
    ImportDetection,
@@ -31,13 +31,15 @@ for each pass done. Any relevant details are
 printed within each stage.
 '''
 class Analyzer:
-   def __init__(self, tree, name=""):
+   def __init__(self, tree, name="", mode: str | None = None):
       self.tree = tree
       self.model = ProgramModel(name=name)
-      
+      self.mode = mode
+
    def run(self):
       if not self.tree:
-         print(f"No AST to analyze: {self.model.name}")
+         if self.mode == "verbose":
+            print(f"No AST to analyze: {self.model.name}")
          return None
       import_detection = ImportDetection()
       import_detection.visit(self.tree)
@@ -52,7 +54,9 @@ class Analyzer:
       TargetUpdate(self.model).update_thread_accesses()
       ClassResolutionPass(self.model).resolve_classes()
       SharedUpdate(self.model).update_shared_vars()
-      result = CriticalPass(self.model).analyze_shared_vars()
+      result = CriticalPass(self.model, 
+                            mode=self.mode
+                            ).analyze_shared_vars()
       
       # ================= DEBUGGING =================
       # for func, node in self.model.functions.items():
@@ -83,37 +87,56 @@ class Analyzer:
       #    for target, accesses in nodes.items():
       #       print(f"  {target}: {len(accesses)} accesses")
 
+      # Wrapper to identify and collect data later
       return {
          "name": self.model.name,
-         "unsafe": result is not None and result.get("unsafe", False) if isinstance(result, dict) else bool(result),
+         "unsafe": result is not None and result.get("unsafe", False),
          "violations": result.get("violations", set()) if isinstance(result, dict) else set(),
+         "detail": result,
       }
             
 '''
 Takes a list of filepaths (namely ones that lead
 to files/*.py) and runs an analysis on each
 '''
-def parse_files(paths: list[str]):
+def parse_files(paths: list[str], mode: str | None = None, json_out: str | None = None):
    PRECEDENCE = ["SHARED LIST", "SHARED DICT", "SHARED SET", "SC"]
    unsafe_files = []
-   safe_files   = []
-   for path in paths:
-      tree   = util.build_ast_from_filepath(path)
-      result = Analyzer(tree, name=path).run()
-      if result and result["unsafe"]:
-         unsafe_files.append((path, result.get("violations", set())))
-      elif result:
-         safe_files.append(path)
+   all_results  = []
+   json_data = {}
 
-   print("\n====================")
-   if unsafe_files:
-      print(f"{len(unsafe_files)} unsafe file(s) detected:")
-      print("Unsafe threading detected in:")
-      for path, violations in unsafe_files:
-         kinds = [k for k in PRECEDENCE if k in violations]
-         print(f"  - {path} [{', '.join(kinds)}]")
-   else:
-      print("No unsafe threading detected.")
+   for path in paths:
+      tree   = util.build_ast_from_filepath(path, mode=mode)
+      result = Analyzer(tree, 
+                        name=path, 
+                        mode=mode, 
+                        ).run()
+      if result is None:
+         continue
+
+      all_results.append(result.get("detail", {}))
+
+      if result.get("unsafe", False):
+         unsafe_files.append((path, result.get("violations", set())))
+         
+      json_data[path] = result 
+      
+         
+   if json_out:
+      with open(json_out, "w") as f:
+         json.dump(json_data, f, indent=2)
+      if mode != "silent":
+         print(f"\nResults written to {json_out}")
+
+   if mode != "silent":
+      print("\n====================")
+      if unsafe_files:
+         print(f"{len(unsafe_files)} unsafe file(s) detected:")
+         for path, violations in unsafe_files:
+            kinds = [k for k in PRECEDENCE if k in violations]
+            print(f"  - {path} [{', '.join(kinds)}]")
+      else:
+         print("No unsafe threading detected.")
 
 '''
 Takes the repo urls from repos.txt, 
@@ -141,20 +164,44 @@ whether thru local downloads, repo pulling, or
 manual file naming within the project directory
 '''
 def main():
-   args = sys.argv
+   args = sys.argv[1:]
+   mode = None
+   json_out = None
+         
    if len(args) > 1:
-      if "--files" in args or "-f" in args:
-         print("Reading files from top_1k_repos/...")
-         files = util.get_filepaths_in_dir("top_1k_repos")
-         parse_files(files)
+      if "--verbose" in args or "-v" in args:
+         mode = "verbose"
+         args = [a for a in args if a not in ("--verbose", "-v")]
+      
+      if "-o" in args or "--output" in args:
+         o_index = args.index("-o") if "-o" in args else args.index("--output")
+         if o_index < len(args) - 1:
+            json_out = args[o_index + 1]
+            args = args[:o_index] + args[o_index + 2:]
+         else:
+            print("Error: -o flag provided without filename")
+            sys.exit(1)
             
-      # elif "--repos" in args or "-r" in args:
-      #    print("Reading files from repos in repos.txt...")
-      #    parse_repos()
-                  
-      else:
-         files = args[1:]
-         parse_files(files)
+      if "-s" in args or "--silent" in args:
+         mode = "silent"
+         args = [a for a in args if a not in ("-s", "--silent")]
+            
+      paths = util.get_all_filepaths(args)
+      
+      if not paths:
+         print("No valid file paths provided.")
+         sys.exit(1)
+         
+      parse_files(paths, mode=mode, json_out=json_out)
+      
+   elif len(args) != 1 and ("--help" in args or "-h" in args):
+      print("Usage: python parse.py [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>")
+      print("  -v, --verbose       Enable verbose output")
+      print("  -s, --silent        Enable silent output")
+      print("  -o <filename>, --output <filename>   Output results to JSON file")
+      
+   else:
+      print("Invalid command line arguments, use --help for usage info")
 
 if __name__ == "__main__":
    main()

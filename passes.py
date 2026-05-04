@@ -246,7 +246,6 @@ class TypeInferencePass(PCNodeVisitor):
    
    visit_AsyncFunctionDef = visit_FunctionDef
 
-
    def visit_Assign(self, node):
       inferred = self._infer(node.value)
       if inferred:
@@ -537,10 +536,10 @@ class ThreadPass(PCNodeVisitor):
          executor_name = self._qualify(executor_node) if executor_node else None
          if executor_name and executor_name in self.model.executors:
                target = ThreadTarget(name=name, 
-                                      class_name=self.current_class, 
-                                      node=arg,
-                                      parent_target=None,
-                                      root_target=name)
+                                     class_name=self.current_class, 
+                                     node=arg,
+                                     parent_target=None,
+                                     root_target=name)
                self.model.thread_targets.append(target)
                self.model.seen_targets.add(name)
 
@@ -660,10 +659,10 @@ program model so that we include
 the indirect thread targets
 '''
 class ThreadExpansion:
-    def __init__(self, model):
-        self.model = model
+   def __init__(self, model):
+      self.model = model
 
-    def expand(self):
+   def expand(self):
       worklist = [t.name for t in self.model.thread_targets]
       visited = set(worklist)
 
@@ -688,9 +687,9 @@ class ThreadExpansion:
 
 # We only care about list, set, and dict mutations
 MUTATING_METHODS = {
-   "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse",  # list
-   "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update",  # set
-   "clear", "pop", "popitem", "setdefault", "update",  # dict
+   "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", 
+   "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update", 
+   "clear", "pop", "popitem", "setdefault", "update", 
 }
 '''
 This pass of the AST is meant to target specifically the 
@@ -945,7 +944,9 @@ class TargetUpdate:
 '''
 This pass of the AST is meant to check 
 targets belonging to a class and capture
-info about instance attributes
+info about instance attributes, as thread
+detection for thread targets within classes
+is handled slightly differently than in the ThreadPass
 '''
 class ClassResolutionPass(PCNodeVisitor):
    def __init__(self, model):
@@ -1127,12 +1128,14 @@ class SharedUpdate(PCNodeVisitor):
 This pass of the AST is meant to go over the thread targets
 identified earlier along with the relevant information
 from the previous passes and detect novel behavior that
-may be considered thread-unsafe
+may be considered thread-unsafe and prepare output in 
+json format to analyze later
 '''
 class CriticalPass:
-   def __init__(self, model):
+   def __init__(self, model, mode: str | None = None):
       self.model = model
-      
+      self.mode = mode
+
    def _is_with_locking(self, node):
       locks = ("lock", "acquire")
       for item in node.items:
@@ -1323,10 +1326,85 @@ class CriticalPass:
          return "CLASS_ATTR"
       return "OTHER"
    
-   def _get_unprotected_calls(self, target):
+   def _node_loc(self, node) -> dict:
+      return {
+         "line": getattr(node, "lineno", None),
+         "col":  getattr(node, "col_offset", None),
+      }
+      
+   def _serialize_access_map(self, access_map: dict[str, list]) -> dict:
+      return {
+         var: [self._node_loc(n) for n in nodes]
+         for var, nodes in access_map.items()
+      }
+      
+   def _serialize_shared_vars(self) -> dict:
+      result = {}
+      for var, info in self.model.shared_vars.items():
+         result[var] = {
+            "type": self.model.var_types.get(var, "other"),
+            "classification": self._classify_variable(var),
+            "reads":  {t: [self._node_loc(n) for n in nodes]
+                     for t, nodes in info["reads"].items()},
+            "writes": {t: [self._node_loc(n) for n in nodes]
+                     for t, nodes in info["writes"].items()},
+         }
+      return result
+   
+   def _serialize_target(self, target: ThreadTarget) -> dict:
+      scope = self.model.function_scopes.get(target.name)
+      shared_reads, shared_writes = self._get_shared_accesses(target)
+      unprotected_calls = self._get_unprotected_calls(target)
+
+      # Partition accesses into protected / unprotected
+      def split_protected(var_set, access_map):
+         out = {}
+         for var in var_set:
+            unprotected = []
+            for node in access_map.get(var, []):
+               if not self._is_protected(node):
+                  unprotected.append(self._node_loc(node))
+            out[var] = {"unprotected": unprotected,
+                        "type": self.model.var_types.get(var),
+                        "classification": self._classify_variable(var)}
+         return out
+
+      call_locs = {}
+      for func, nodes in target.calls.items():
+         if func not in unprotected_calls:
+               continue
+         receiver = self._get_receiver(func)
+         tname = target.parent_target or target.name
+         if receiver and not self._receiver_is_shared(
+            receiver, self.model.function_scopes.get(tname)):
+               continue
+         call_locs[func] = {
+               "protected":   [self._node_loc(n) for n in nodes if self._is_protected(n)],
+               "unprotected": [self._node_loc(n) for n in nodes if not self._is_protected(n)],
+         }
+
+      return {
+         "name":           target.name,
+         "class":          target.class_name if target.class_name else None,
+         "parent_target":  target.parent_target if target.parent_target else None,
+         "root_target":    target.root_target,
+         "shared_reads":   split_protected(shared_reads,  target.reads),
+         "shared_writes":  split_protected(shared_writes, target.writes),
+         "mutating_calls": call_locs,
+      }
+      
+   def to_json(self, violations: set[str], found_bad_call: bool) -> dict:
+      return {
+         "unsafe":       bool(violations) or found_bad_call,
+         "violations":   sorted(violations),
+         "shared_vars":  self._serialize_shared_vars(),
+         "thread_targets": [self._serialize_target(t) for t in self.model.thread_targets],
+      }
+   
+   def _get_unprotected_calls(self, target) -> set[str]:
       return {func for func, nodes in target.calls.items() if any(not self._is_protected(node) for node in nodes)}
    
-   def _print_thread_header(self, target, shared_reads, shared_writes, calls):
+   def _print_thread_header(self, target, shared_reads, shared_writes, calls) -> None:
       print(f"\n Thread routine: {target.name}")
       
       if shared_reads:
@@ -1344,7 +1422,7 @@ class CriticalPass:
       if calls:
          print("   Calls functions:", calls)
          
-   def _print_other_threads(self, var, current, readers, writers):
+   def _print_other_threads(self, var, current, readers, writers) -> None:
       other_readers = [t for t in readers if t != current]
       other_writers = [t for t in writers if t != current]
 
@@ -1359,11 +1437,11 @@ class CriticalPass:
       if other_readers or other_writers:
          print()
          
-   def _print_no_shared(self, target):
+   def _print_no_shared(self, target) -> None:
       print(f"\n Thread routine: {target.name}")
       print(f"   No shared state detected")
 
-   def _analyze_calls(self, target, unprotected_calls):
+   def _analyze_calls(self, target, unprotected_calls) -> bool:
       found_bad_call = False
       tname = target.parent_target if target.parent_target is not None else target.name
       scope = self.model.function_scopes.get(tname)
@@ -1380,11 +1458,12 @@ class CriticalPass:
          for node in nodes:
                if not self._is_protected(node): 
                   found_bad_call = True
-                  print(f"      Unprotected call  of {func} in line {node.lineno}")
+                  if self.mode == "verbose":
+                     print(f"      Unprotected call  of {func} in line {node.lineno}")
 
       return found_bad_call
          
-   def _analyze_shared_variables(self, target, shared_reads, shared_writes):
+   def _analyze_shared_variables(self, target, shared_reads, shared_writes) -> set[str]:
       violations = set()
       tname = target.parent_target if target.parent_target is not None else target.name
       
@@ -1405,9 +1484,11 @@ class CriticalPass:
                   case "dict": kind = "SHARED DICT"
                   case _:      kind = "SC"
                violations.add(kind)
-               print(f"      Unprotected read of {var} in line {node.lineno} [{kind}]")
+               
+               if self.mode == "verbose":
+                  print(f"      Unprotected read of {var} in line {node.lineno} [{kind}]")
 
-         if violations:
+         if violations and self.mode == "verbose":
             self._print_other_threads(var, tname, readers, writers)
 
       for var in shared_writes:
@@ -1428,17 +1509,21 @@ class CriticalPass:
                      case "dict": kind = "SHARED DICT"
                      case _:      kind = "SC"
                   violations.add(kind)
-                  print(f"      Unprotected write of {var} in line {node.lineno} [{kind}]")
+                  if self.mode == "verbose":
+                     print(f"      Unprotected write of {var} in line {node.lineno} [{kind}]")
 
-               self._print_other_threads(var, tname, readers, writers)
-                  
+               if self.mode == "verbose":
+                  self._print_other_threads(var, tname, readers, writers)
+
       return violations
  
-   def analyze_shared_vars(self):
+   def analyze_shared_vars(self) -> dict: # json
       if not self.model.thread_targets:
-         return
-      
-      print(f"\nAnalyzing threads in program: {self.model.name}")
+         return {"program": self.model.name, "unsafe": False,
+                "violations": [], "shared_vars": {}, "thread_targets": []}
+
+      if self.mode == "verbose":
+         print(f"\nAnalyzing threads in program: {self.model.name}")
       
       all_violations = set()
       found_bad_call = False
@@ -1448,20 +1533,22 @@ class CriticalPass:
          unprotected_calls = self._get_unprotected_calls(target)
 
          if shared_reads or shared_writes or unprotected_calls:
-            self._print_thread_header(target, shared_reads, shared_writes, unprotected_calls)
+            if self.mode == "verbose":
+               self._print_thread_header(target, shared_reads, shared_writes, unprotected_calls)
 
             violations = self._analyze_shared_variables(target, shared_reads, shared_writes)
             all_violations |= violations
             found_bad_call = self._analyze_calls(target, unprotected_calls) or found_bad_call
 
-            if not violations:
-               print("      No unprotected variables detected")
-            if not found_bad_call:
-               print("      No unprotected function calls detected")
+            if self.mode == "verbose":
+               if not violations:
+                  print("      No unprotected variables detected") 
+               if not found_bad_call:
+                  print("      No unprotected function calls detected")
          else:
+            if self.mode == "verbose":
                self._print_no_shared(target)
 
-      return {
-         "unsafe": bool(all_violations) or found_bad_call,
-         "violations": all_violations,
-      }
+      result = self.to_json(all_violations, found_bad_call)
+            
+      return result

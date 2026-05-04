@@ -8,22 +8,25 @@ Opens the file given as the filepath
 and returns the resultant AST only 
 if it contains the threading library
 '''
-def build_ast_from_filepath(filepath: str):
+def build_ast_from_filepath(filepath: str, mode: str | None = None):
    try:
       with open(filepath) as f:
          # print(f"Parsing {filepath}...")
          program = f.read()
    except FileNotFoundError:
-      print(f"\nThe given file <{filepath}> doesn't exist")
+      if mode != "silent":
+         print(f"\nThe given file <{filepath}> doesn't exist")
       return None
    except Exception as e:
-      print(f"\nThere was an error reading <{filepath}>: {e}")
+      if mode != "silent":
+         print(f"\nThere was an error reading <{filepath}>: {e}")
       return None
    
    try:
       tree = ast.parse(program)
    except Exception as e:
-      print(f"\nThere was an error parsing <{filepath}> into an AST: {e}")
+      if mode != "silent":
+         print(f"\nThere was an error parsing <{filepath}> into an AST: {e}")
       return None
    
    return tree
@@ -33,11 +36,12 @@ Parses the given file string
 and returns the resultant AST only 
 if it contains the threading library
 '''
-def build_ast_from_program(filepath: str, file: str):
+def build_ast_from_program(filepath: str, file: str, mode: str | None = None):
    try:
       tree = ast.parse(file)
    except Exception as e:
-      print(f"There was an error parsing <{filepath}> into an AST: {e}\n")
+      if mode != "silent":
+         print(f"There was an error parsing <{filepath}> into an AST: {e}\n")
       return None
    
    return tree
@@ -50,6 +54,15 @@ Output: filepaths - a list of paths to python files for parsing
 def get_filepaths_in_dir(dir):
    return [str(p) for p in Path(dir).rglob("*.py")]
 
+def get_all_filepaths(args):
+   collected = []
+   for arg in args:
+      if Path(arg).is_file() and arg.endswith(".py"):
+         collected.append(arg)
+      elif Path(arg).is_dir():
+         collected.extend(get_filepaths_in_dir(arg))         
+   
+   return collected
 
 class GitHubPyGrab:
    def __init__(self, repo_url):
