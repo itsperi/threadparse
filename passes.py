@@ -677,12 +677,13 @@ class ThreadExpansion:
 
                # Add as synthetic thread target
                class_name = self.model.method_to_class.get(callee)
+               root_target = current.root_target if current in self.model.thread_targets else current
                self.model.thread_targets.append(
                   ThreadTarget(name=callee, 
                                class_name=class_name,
                                node=self.model.functions[callee],
                                parent_target=current,
-                               root_target=worklist[0] if worklist else current)
+                               root_target=root_target)
                )                    
 
 # We only care about list, set, and dict mutations
@@ -1318,12 +1319,12 @@ class CriticalPass:
          return "GLOBAL"
       elif var in self.model.nonlocals:
          return "NONLOCAL"
-      elif var in self.model.shared_vars:
-         return "CROSS_THREAD"
       elif var in self.model.module_vars:
          return "MAIN_SCOPE"
       elif var in self.model.class_attrs:
          return "CLASS_ATTR"
+      elif var in self.model.shared_vars:
+         return "CROSS_THREAD"
       return "OTHER"
    
    def _node_loc(self, node) -> dict:
