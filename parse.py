@@ -194,14 +194,14 @@ def main():
          
       parse_files(paths, mode=mode, json_out=json_out)
       
-   elif len(args) != 1 and ("--help" in args or "-h" in args):
+   elif "--help" in args or "-h" in args:
       print("Usage: python parse.py [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>")
       print("  -v, --verbose       Enable verbose output")
       print("  -s, --silent        Enable silent output")
       print("  -o <filename>, --output <filename>   Output results to JSON file")
       
    else:
-      print("Invalid command line arguments, use --help for usage info")
+      print("Invalid command line arguments, use [-h | --help] for usage info")
 
 if __name__ == "__main__":
    main()

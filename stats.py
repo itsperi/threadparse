@@ -67,6 +67,12 @@ def build_summary_rows(data: dict) -> list[dict]:
 
 # ── repo aggregation ──────────────────────────────────────────────────────────
 
+# Fields where 100×mean is a genuine percentage (values are 0 or 1)
+_BINARY_FIELDS = (
+   {"unsafe"}
+   | {f"viol_{k.lower().replace(' ', '_')}" for k in VIOLATION_KINDS}
+)
+
 def build_repo_rows(data: dict) -> list[dict]:
    """Collapse file-level summaries into one row per repo (base directory)."""
    buckets: dict[str, list[dict]] = defaultdict(list)
@@ -77,13 +83,20 @@ def build_repo_rows(data: dict) -> list[dict]:
    numeric_fields = None
    for repo, file_rows in sorted(buckets.items()):
       if numeric_fields is None:
-         numeric_fields = [k for k in file_rows[0] if k not in ("file",)]
+         numeric_fields = [k for k in file_rows[0] if k != "file"]
 
-      row = {"repo": repo, "n_files": len(file_rows)}
+      n   = len(file_rows)
+      row = {"repo": repo, "n_files": n}
       for field in numeric_fields:
          values = [r[field] for r in file_rows]
-         row[f"sum_{field}"]  = sum(values)
-         row[f"pct_{field}"]  = round(100 * sum(values) / len(values), 1)
+         total  = sum(values)
+         row[f"sum_{field}"] = total
+         if field in _BINARY_FIELDS:
+            # pct_ only meaningful for 0/1 flags: % of files where flag is set
+            row[f"pct_{field}"] = round(100 * total / n, 1) if n else 0.0
+         else:
+            # avg_ for counts — 100×mean was the bug
+            row[f"avg_{field}"] = round(total / n, 2) if n else 0.0
       rows.append(row)
    return rows
 
