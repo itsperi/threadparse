@@ -100,7 +100,7 @@ Takes a list of filepaths (namely ones that lead
 to files/*.py) and runs an analysis on each
 '''
 def parse_files(paths: list[str], mode: str | None = None, json_out: str | None = None):
-   PRECEDENCE = ["SHARED LIST", "SHARED DICT", "SHARED SET", "SC"]
+   PRECEDENCE = ["SHARED SET", "SHARED DICT", "SHARED LIST", "SC"]
    unsafe_files = []
    all_results  = []
    json_data = {}
