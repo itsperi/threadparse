@@ -11,9 +11,9 @@ There are 2 main files that drive the parsing pipeline:
 ### `parse.py` Usage
 ``` python parse.py [-h | --help] [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>```
       
-      -h | --help                 Outputs this usage information; also outputs if no arguments are provided
+      -h | --help                Outputs this usage information; warns if no arguments provided
       
-      -v | --verbose              Enable verbose output; this should be redirected to another file, especially if parsing large datasets
+      -v | --verbose             Enable verbose output; this should be redirected to another file, especially if parsing large datasets
       
       -s |--silent               Enable silent output
       
@@ -22,7 +22,7 @@ There are 2 main files that drive the parsing pipeline:
 ### `stats.py` Usage
 ``` python stats.py [-h | --help] <input.json> [--out-dir <dir>] [--by-repo]```
       
-      -h | --help                 Outputs this usage information; also outputs if no arguments are provided
+      -h | --help                Outputs this usage information; also outputs if no arguments are provided
       
       <input.json>               Input JSON from `parse.py`
       
