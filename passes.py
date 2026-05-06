@@ -2,25 +2,26 @@ import ast
 from model import ThreadTarget, Scope
 from collections import defaultdict
 
-
-'''
-Custom NodeVisitor that enables parent tracking for upwards recursion
-'''
 class PCNodeVisitor(ast.NodeVisitor):
+   '''
+   Custom NodeVisitor that enables parent tracking for upwards recursion
+   '''
    def generic_visit(self, node):
       for child in ast.iter_child_nodes(node):
          child.parent = node
          self.visit(child)
 
-'''
-This pass of the AST is meant to detect
-whether a file contains the threading import
-'''
 
 class ImportDetection(ast.NodeVisitor):
+   '''
+   This pass of the AST is meant to detect
+   whether a file contains the threading import
+   '''
+   
    def __init__(self):
       self.uses_threading = False
 
+   # checks normal "import ...,x,..." where x is a multithreading module
    def visit_Import(self, node):
       for alias in node.names:
          if alias.name in {"threading",
@@ -32,6 +33,7 @@ class ImportDetection(ast.NodeVisitor):
             
       self.generic_visit(node)
 
+   # checks "from x import ..." where x is a multithreading module
    def visit_ImportFrom(self, node):
       if node.module in {"threading",
                          "_thread",
@@ -51,14 +53,14 @@ class ImportDetection(ast.NodeVisitor):
             return
       self.generic_visit(node)
             
-'''
-This pass of the AST is meant to gather the names and locations
-of global, nonlocal variables and function definitions to later 
-use as potential pieces of interest in threads, as well as 
-gathering info about class definitions for later resolution of method calls;
-we also capture rudimentary data about various ways threads are instantiated
-'''
 class SymbolPass(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to gather the names and locations
+   of global, nonlocal variables and function definitions to later 
+   use as potential pieces of interest in threads, as well as 
+   gathering info about class definitions for later resolution of method calls;
+   we also capture rudimentary data about various ways threads are instantiated
+   '''
    def __init__(self, model):
       self.model = model
       self.current_function = None
@@ -102,17 +104,23 @@ class SymbolPass(PCNodeVisitor):
       self.generic_visit(node)
       self.current_function = previous
       
+   # Interestingly enough, asynch func defs are 
+   # completely different nodes but they are treated the same
    visit_AsyncFunctionDef = visit_FunctionDef
 
+   # add globals to model
    def visit_Global(self, node):
       for name in node.names:
          self.model.globals[name] = node
          
+         # if we're in a function, 
+         # tie that global to the function
          if self.current_function:
             self.model.function_globals \
                .setdefault(self.current_function, set()) \
                .add(name)
 
+   # add nonlocals to model
    def visit_Nonlocal(self, node):
       for name in node.names:
          self.model.nonlocals[name] = node
@@ -122,12 +130,19 @@ class SymbolPass(PCNodeVisitor):
                .setdefault(self.current_function, set()) \
                .add(name)
                
+   
    def visit_Assign(self, node):
+      # Module-level variables are special in that
+      # threads can access them without needing a global declaration, 
+      # so we want to track them, especially since we need to 
+      # verify any thread targets access them after their initial assignment
       if self.current_function is None:
          for target in node.targets:
             for name in self._extract_names(target):
                self.model.module_vars[name] = node
       
+      # Here we capture any instantiations from function calls
+      # that either alias to known threading constructs or are used as thread targets
       if isinstance(node.value, ast.Call):
          func = node.value.func
          is_executor = (
@@ -157,6 +172,7 @@ class SymbolPass(PCNodeVisitor):
                for name in self._extract_names(target):
                   self.model.thread_vars.add(name)
                   
+         # We also capture Queue instantiations since they are thread-safe
          is_queue = (
             isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue", "PriorityQueue"}
          ) or (
@@ -168,6 +184,7 @@ class SymbolPass(PCNodeVisitor):
                for name in self._extract_names(target):
                   self.model.var_types[name] = type_name
                            
+      # Also capture info about class attribute instantiations
       if self.current_class and self.current_function:
          for target in node.targets:
             if (isinstance(target, ast.Attribute) 
@@ -178,6 +195,7 @@ class SymbolPass(PCNodeVisitor):
 
       self.generic_visit(node)
       
+   # Threading constructs often use context managers, so we visit these as well
    def visit_With(self, node):
       for with_item in node.items:
          context_expr = with_item.context_expr
@@ -207,6 +225,7 @@ class SymbolPass(PCNodeVisitor):
          return names
       return []
    
+   # Helper to check if a class inherits from threading.Thread
    def _is_thread_base(self, node):
       if isinstance(node, ast.Name) and node.id == "Thread":
          return True
@@ -220,25 +239,26 @@ class SymbolPass(PCNodeVisitor):
 
 COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
 QUEUE_TYPES = {"Queue", "SimpleQueue", "PriorityQueue"}
-'''
-This pass of the AST is meant to gather types of
-variables created in the program so we can filter
-out the mutations to Python's naturally unsafe default
-collections like lists, sets, and dicts (Queues are threadsafe tho)
-'''
 class TypeInferencePass(PCNodeVisitor):
-   def __init__(self, model):
+   '''
+   This pass of the AST is meant to gather types of
+   variables (namely default data structures) created in the
+   program so we can filter out the mutations to Python's 
+   naturally unsafe default collections like lists, sets, and dicts
+   '''
+   def __init__(self, model) -> None:
       self.model = model
       self.current_function = None
       self.current_class = None
 
-   def visit_ClassDef(self, node):
+   # Standard scoping rules
+   def visit_ClassDef(self, node) -> None:
       prev = self.current_class
       self.current_class = node.name
       self.generic_visit(node)
       self.current_class = prev
 
-   def visit_FunctionDef(self, node):
+   def visit_FunctionDef(self, node) -> None:
       prev = self.current_function
       self.current_function = node.name
       self.generic_visit(node)
@@ -246,7 +266,9 @@ class TypeInferencePass(PCNodeVisitor):
    
    visit_AsyncFunctionDef = visit_FunctionDef
 
-   def visit_Assign(self, node):
+   # Visit variable assignments, and populate var_types
+   # If we're looking at class attributes, qualify their full name
+   def visit_Assign(self, node) -> None:
       inferred = self._infer(node.value)
       if inferred:
          for target in node.targets:
@@ -260,9 +282,12 @@ class TypeInferencePass(PCNodeVisitor):
                qualified = f"{self.current_class}.{target.attr}"
                self.model.var_types[qualified] = inferred
                self.model.var_types[target.attr] = inferred
+               
       self.generic_visit(node)
 
-   def visit_AnnAssign(self, node):
+   # Properly annotated variables are different nodes, 
+   # but are inferred more straightforwardly 
+   def visit_AnnAssign(self, node) -> None:
       inferred = self._infer(node.value) if node.value else self._infer_annotation(node.annotation)
       if inferred:
          if isinstance(node.target, ast.Name):
@@ -278,9 +303,11 @@ class TypeInferencePass(PCNodeVisitor):
             qualified = f"{self.current_class}.{node.target.attr}"
             self.model.var_types[qualified] = inferred
             self.model.var_types[node.target.attr] = inferred
+
       self.generic_visit(node)
 
-   def _infer(self, node):
+   # Helper that takes a node and looks at the type
+   def _infer(self, node) -> str | None:
       if node is None:
          return None
       if isinstance(node, (ast.List, ast.ListComp)):
@@ -295,6 +322,8 @@ class TypeInferencePass(PCNodeVisitor):
       if isinstance(node, ast.Subscript):
          if isinstance(node.slice, ast.Slice):
             return self._infer(node.value)
+
+      # For operations like x = [] + [] or x = set() | set()
       if isinstance(node, ast.BinOp):
          if isinstance(node.op, ast.Add):
             left = self._infer(node.left)
@@ -350,12 +379,12 @@ class TypeInferencePass(PCNodeVisitor):
          return names
       return []
 
-'''
-This pass of the AST is meant to go over the function
-definitions, variable writes in each function/scope
-and define the stack scope for each
-'''
 class ScopePass(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to go over the function
+   definitions, variable writes in each function/scope
+   and define the stack scope for each one
+   '''
    def __init__(self, model):
       self.model = model
       self.scope_stack: list[Scope] = []
@@ -372,8 +401,9 @@ class ScopePass(PCNodeVisitor):
 
    '''
    Whenever we enter a function definition, we create a new scope
-   and add the parameters as local variables. When we exit, we pop the scope
-   and save it in the program model for later use.
+   and add the parameters as local variables (this is somewhat pessimistic, 
+   as it can be a copy of a variable or a reference). When we exit,
+   we pop the scope and save it in the program model for later use.
    '''
    def visit_FunctionDef(self, node):
       if self.current_class:
@@ -466,12 +496,13 @@ class ScopePass(PCNodeVisitor):
       self.generic_visit(node)
       self.scope_stack.pop()
 
-'''
-This pass of the AST is meant to gather 
-info about which functions are designated 
-as Thread targets and saves their nodes for later use
-'''
 class ThreadPass(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to gather 
+   info about which functions are designated 
+   as Thread targets and saves their nodes 
+   and other relevant information for later use
+   '''
    def __init__(self, model):
       self.model = model
       self.current_class = None
@@ -482,6 +513,8 @@ class ThreadPass(PCNodeVisitor):
       self.generic_visit(node)
       self.current_class = previous
       
+   # We look for both explicit Thread(target=...) cases 
+   # and classes that inherit from Thread and define run()
    def visit_FunctionDef(self, node):
       if (self.current_class
       and self.current_class in self.model.thread_subclasses
@@ -508,10 +541,10 @@ class ThreadPass(PCNodeVisitor):
          if name and name not in self.model.seen_targets \
          and name in self.model.functions.keys():
             target = ThreadTarget(name=name, 
-                                   class_name=self.current_class, 
-                                   node=node,
-                                   parent_target=None,
-                                   root_target=name)
+                                  class_name=self.current_class, 
+                                  node=node,
+                                  parent_target=None,
+                                  root_target=name)
             self.model.thread_targets.append(target)
             self.model.seen_targets.add(name)
    
@@ -556,11 +589,12 @@ class ThreadPass(PCNodeVisitor):
             for kw in node.keywords:
                self._check_threading(node, kw)
                
-         # or for _threading.start_new_thread cases
+         # or for _threading.start_new_thread(...) cases
          elif node.func.attr == "start_new_thread":
             if node.args:
                self._check_thread(node.args[0]) 
          
+         # or for executor.submit/map(...) cases
          elif node.func.attr in ("submit", "map", 
                                  "imap", "imap_unordered", "starmap", "apply_async"):
             if node.args:
@@ -599,12 +633,12 @@ class ThreadPass(PCNodeVisitor):
 
       return None
 
-'''
-This pass of the AST is meant to 
-build a call graph so we can 
-find transitive threadtarget calls later
-'''
 class CallGraphPass(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to 
+   build a call graph so we can 
+   find "transitive ThreadTargets"
+   '''
    def __init__(self, model):
       self.model = model
       self.current_function = None
@@ -631,6 +665,8 @@ class CallGraphPass(PCNodeVisitor):
       
    visit_AsyncFunctionDef = visit_FunctionDef
 
+   # Find any function calls that exist 
+   # within functions and add them to the call graph
    def visit_Call(self, node):
       if not self.current_function:
          return
@@ -653,12 +689,12 @@ class CallGraphPass(PCNodeVisitor):
 
       self.generic_visit(node)
 
-'''
-This class is meant to update the
-program model so that we include 
-the indirect thread targets
-'''
 class ThreadExpansion:
+   '''
+   This class is meant to update the
+   program model so that we include 
+   the indirect thread targets
+   '''
    def __init__(self, model):
       self.model = model
 
@@ -692,14 +728,18 @@ MUTATING_METHODS = {
    "add", "discard", "pop", "clear", "update", "intersection_update", "difference_update", "symmetric_difference_update", 
    "clear", "pop", "popitem", "setdefault", "update", 
 }
-'''
-This pass of the AST is meant to target specifically the 
-functions designated as Thread targets and gather information
-about the variable reads, writes, function calls with 
-potential side effects, and subscript/attribute accesses 
-'''
 class TargetPass(PCNodeVisitor):
-   def __init__(self, model = None, scope: Scope = None, class_name: str = None, var_types = None):
+   '''
+   This pass of the AST is meant to target specifically the 
+   functions designated as ThreadTargets and gather information
+   about the variable reads, writes, function calls with 
+   potential side effects, and subscript/attribute accesses 
+   '''
+   def __init__(self, 
+                model = None, 
+                scope: Scope = None, 
+                class_name: str = None, 
+                var_types = None):
       self.model = model
       self.scope = scope
       self.class_name = class_name
@@ -726,7 +766,6 @@ class TargetPass(PCNodeVisitor):
       
    # For reads/writes within thread targets
    def visit_Name(self, node):
-      # Let's avoid double counting
       parent = getattr(node, "parent", None)
 
       # If this Name is part of ANY attribute chain, ignore it
@@ -823,10 +862,14 @@ class TargetPass(PCNodeVisitor):
          method = node.func.attr
          obj = node.func.value
 
+         # Record method calls that mutate, 
+         # but filter out mutations to known 
+         # thread-safe queue types and collections 
+         # that are locally defined within the function
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                obj_type = self.var_types.get(obj.id)
-               if obj_type not in QUEUE_TYPES and (obj_type in {"list", "set", "dict"} or obj_type is None):  # ← added guard
+               if obj_type not in QUEUE_TYPES and (obj_type in {"list", "set", "dict"} or obj_type is None):
                   self.calls[func_name].append(node)
                   if self.scope and obj.id not in self.scope.locals:
                      self.writes[obj.id].append(node)
@@ -848,7 +891,7 @@ class TargetPass(PCNodeVisitor):
 
       self.generic_visit(node)
       
-   # For subscript writes
+   # For subscript reads/writes
    def visit_Subscript(self, node):
       if isinstance(node.ctx, ast.Store):
          if isinstance(node.value, ast.Name):
@@ -870,9 +913,9 @@ class TargetPass(PCNodeVisitor):
             if full_name:
                self.reads[full_name].append(node)
                
+   # for del list[x] or del list[:]
    def visit_Delete(self, node):
       for target in node.targets:
-         # del list[x] or del list[:]
          if isinstance(target, ast.Subscript):
             if isinstance(target.value, ast.Name):
                self.writes[target.value.id].append(node)
@@ -882,7 +925,7 @@ class TargetPass(PCNodeVisitor):
                   full_name = f"{self.class_name}.{full_name[5:]}"
                if full_name:
                   self.writes[full_name].append(node)
-         # del list  (the variable itself)
+         # del list (the variable itself)
          elif isinstance(target, ast.Name):
             self.writes[target.id].append(node)
 
@@ -916,11 +959,11 @@ class TargetPass(PCNodeVisitor):
       return []
 
 
-'''
-This class is meant to update the program model
-with the relevant data collected from the thread pass
-'''
 class TargetUpdate:
+   '''
+   This class is meant to update the program model
+   with the relevant data collected from the thread pass
+   '''
    def __init__(self, model):
       self.model = model
       
@@ -942,20 +985,20 @@ class TargetUpdate:
          target.writes = parser.writes
          target.calls = parser.calls
 
-'''
-This pass of the AST is meant to check 
-targets belonging to a class and capture
-info about instance attributes, as thread
-detection for thread targets within classes
-is handled slightly differently than in the ThreadPass
-'''
 class ClassResolutionPass(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to check 
+   targets belonging to a class and capture
+   info about instance attributes, as thread
+   detection for thread targets within classes
+   is handled slightly differently than in the ThreadPass
+   '''
    def __init__(self, model):
       self.model = model
       
+   # A method is reachable from another thread if it's called by the target
+   # or if it's called by a method that is reachable from the target
    def _is_reachable_from_other_thread(self, method, target):
-      # A method is reachable from another thread if it's called by the target
-      # or if it's called by a method that is reachable from the target
       visited = set()
       to_visit = [target.name]
 
@@ -972,6 +1015,11 @@ class ClassResolutionPass(PCNodeVisitor):
 
       return False
 
+   # For each target that belongs to a class, 
+   # we look at all the sibling methods in the same class
+   # and check if any of them are reachable from another thread. 
+   # If they are, we parse them with TargetPass and merge their 
+   # reads/writes into the target's sibling_reads/sibling_writes 
    def resolve_classes(self):
       for target in self.model.thread_targets:
          # Extract class name from qualified target name
@@ -1018,16 +1066,17 @@ class ClassResolutionPass(PCNodeVisitor):
                      .setdefault(method, []) \
                      .extend(nodes)
                         
-'''
-This pass of the AST is meant to analyze
-variables/data structures across the entire
-program and detect any that are shared among thread targets
-'''
 class SharedUpdate(PCNodeVisitor):
+   '''
+   This pass of the AST is meant to 
+   analyze variables/data structures 
+   across the entire program and detect 
+   any that are shared among ThreadTargets
+   '''
    def __init__(self, model):
       self.model = model
       # We should store the nodes of the reads/writes 
-      # in the form: var -> target -> list of nodes for easier analysis later
+      # in the form: var -> target(s) -> list(s) of nodes for easier analysis later
       self.var_reads: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
       self.var_writes: dict[str, dict[str, list[ast.AST]]] = defaultdict(lambda: defaultdict(list))
       # May God smite my children for what I just wrote
@@ -1063,6 +1112,9 @@ class SharedUpdate(PCNodeVisitor):
       target_names = {t.name for t in self.model.thread_targets}
       reachable = self._reachable_from_targets()
       
+      # First gather reads/writes from the thread targets themselves
+      # We set tname to the parent target if it exists, 
+      # so that we can merge sibling methods into the same "target" for sharing purposes
       for target in self.model.thread_targets:
          tname = target.parent_target if target.parent_target is not None else target.name
          for var, nodes in target.reads.items():
@@ -1070,12 +1122,6 @@ class SharedUpdate(PCNodeVisitor):
             
          for var, nodes in target.writes.items():
             self.var_writes[var][tname].extend(nodes)
-            
-         # for var, method_nodes in target.sibling_writes.items():
-         #    for method, nodes in method_nodes.items():
-         #       # Key by "ClassName.method" so the source is identifiable
-         #       sibling_key = f"{tname}::{method}"
-         #       self.var_writes[var][sibling_key].extend(nodes)
                
       for fname, fnode in self.model.functions.items():
          if fname in target_names or fname.endswith(".__init__"):
@@ -1109,7 +1155,9 @@ class SharedUpdate(PCNodeVisitor):
          writer_targets = set(self.var_writes[var].keys())
          involved_targets = reader_targets | writer_targets
          
-         # We should include the nodes themselves
+         # If a variable is accessed by multiple targets, it's potentially shared.
+         # However, we can ignore it if it's only written by the main thread 
+         # and all writes occur before the first thread starts.
          if len(involved_targets) > 1 and len(writer_targets) > 0:
             if self._is_safely_initialized(var, writer_targets, earliest_start):
                continue
@@ -1125,20 +1173,20 @@ class SharedUpdate(PCNodeVisitor):
       self._populate()
       self._update()
 
-'''
-This pass of the AST is meant to go over the thread targets
-identified earlier along with the relevant information
-from the previous passes and detect novel behavior that
-may be considered thread-unsafe and prepare output in 
-json format to analyze later
-'''
 class CriticalPass:
+   '''
+   This pass of the AST is meant to go over the thread targets
+   identified earlier along with the relevant information
+   from the previous passes and detect novel behavior that
+   may be considered thread-unsafe and prepare output in 
+   json format to analyze later
+   '''
    def __init__(self, model, mode: str | None = None):
       self.model = model
       self.mode = mode
 
-   def _is_with_locking(self, node):
-      locks = ("lock", "acquire")
+   def _is_with_locking(self, node) -> bool:
+      locks = ("lock", "acquire", "rlock", "mutex", "semaphore")
       for item in node.items:
          ctx = item.context_expr
          
@@ -1147,14 +1195,23 @@ class CriticalPass:
                if lock in ctx.id.lower():
                   return True
                   
-         if isinstance(ctx, ast.Attribute):
+         elif isinstance(ctx, ast.Attribute):
             for lock in locks:
                if lock in ctx.attr.lower():
                   return True
                   
+         elif isinstance(ctx, ast.Call):
+            func = ctx.func
+            if isinstance(func, ast.Attribute):
+               if any(lock in func.attr.lower() for lock in locks):
+                  return True
+            elif isinstance(func, ast.Name):
+               if any(lock in func.id.lower() for lock in locks):
+                  return True
+               
       return False
       
-   def _is_inside_with(self, node):
+   def _is_inside_with(self, node) -> bool:
       current = node
       while hasattr(current, "parent") and current.parent:
          if isinstance(current.parent, ast.With):
@@ -1163,7 +1220,7 @@ class CriticalPass:
          current = current.parent
       return False     
    
-   def _is_lock_call(self, node):
+   def _is_lock_call(self, node) -> bool:
       if not isinstance(node, ast.Expr):
          return False
 
@@ -1180,7 +1237,7 @@ class CriticalPass:
 
       return False
 
-   def _is_unlock_call(self, node):
+   def _is_unlock_call(self, node) -> bool:
       if not isinstance(node, ast.Expr):
          return False
 
@@ -1193,13 +1250,13 @@ class CriticalPass:
 
       return False
    
-   def _get_parent_statement(self, node):
+   def _get_parent_statement(self, node) -> ast.stmt | None:
       current = node
       while current and not isinstance(current, ast.stmt):
          current = getattr(current, "parent", None)
       return current
    
-   def _is_between_lock_unlock(self, node):
+   def _is_between_lock_unlock(self, node) -> bool:
       stmt = self._get_parent_statement(node)
       current = stmt
 
@@ -1225,21 +1282,33 @@ class CriticalPass:
                lock_found = True
                break
 
+         # search forward for unlock
          if lock_found:
-            # search forward for unlock
+            # check try finallys   
+            if isinstance(current, ast.Try) \
+            and any(self._is_unlock_call(s) for s in current.finalbody):
+               return True
+             
             for i in range(idx + 1, len(body)):
                if self._is_lock_call(body[i]):
                   break
                if self._is_unlock_call(body[i]):
                   return True
          current = parent
-   
+         
       return False
    
-   def _is_protected(self, node):
+   # A node is protected if it's either inside a with statement that involves locking
+   # or if it's between a lock and unlock call in the same function
+   def _is_protected(self, node) -> bool:
       return self._is_inside_with(node) or self._is_between_lock_unlock(node)
    
-   def _is_external(self, name, scope: Scope):
+   # Extra step to check one level up for indirect targets, 
+   # since they may be protected by locks at the call site level
+   def _is_node_protected(self, node: ast.AST, target: ThreadTarget) -> bool:
+      return self._is_protected(node) or self._call_sites_are_protected(target)
+   
+   def _is_external(self, name, scope: Scope) -> bool:
       if name in scope.locals:
          return False
 
@@ -1261,7 +1330,7 @@ class CriticalPass:
          name in self.model.module_vars
       )
    
-   def _is_shared_variable(self, var, scope: Scope):
+   def _is_shared_variable(self, var, scope: Scope) -> bool:
       if scope is None:
          return False
       
@@ -1301,7 +1370,7 @@ class CriticalPass:
       # Fall back to the general shared-variable check on the root
       return self._is_shared_variable(root, scope)
    
-   def _get_shared_accesses(self, target):
+   def _get_shared_accesses(self, target) -> tuple[set[str], set[str]]:
       shared_reads = {
          var for var in target.reads
          if self._is_shared_variable(var, scope=self.model.function_scopes.get(target.name))
@@ -1314,7 +1383,7 @@ class CriticalPass:
 
       return shared_reads, shared_writes
    
-   def _classify_variable(self, var):
+   def _classify_variable(self, var) -> str:
       if var in self.model.globals:
          return "GLOBAL"
       elif var in self.model.nonlocals:
@@ -1352,6 +1421,37 @@ class CriticalPass:
          }
       return result
    
+   def _call_sites_are_protected(self, target: ThreadTarget) -> bool:
+      """
+      For an indirect target, check whether every call site to it
+      within its parent target's function body is lock-protected.
+      If so, the callee's body is transitively covered.
+      """
+      # Ignore non-transitive targets
+      if not target.parent_target:
+         return False
+
+      parent_node = self.model.functions.get(target.parent_target)
+      if not parent_node:
+         return False
+
+      # Match on bare name to handle both `foo()` and `self.foo()` 
+      bare = target.name.rsplit(".", 1)[-1]
+      call_sites = [
+         node for node in ast.walk(parent_node)
+         if isinstance(node, ast.Call) and (
+               (isinstance(node.func, ast.Name) and node.func.id == bare) or
+               (isinstance(node.func, ast.Attribute) and node.func.attr == bare)
+         )
+      ]
+
+      # No call sites found means we can't confirm protection
+      if not call_sites:
+         return False
+
+      # ALL call sites must be protected
+      return all(self._is_protected(cs) for cs in call_sites)
+ 
    def _serialize_target(self, target: ThreadTarget) -> dict:
       scope = self.model.function_scopes.get(target.name)
       shared_reads, shared_writes = self._get_shared_accesses(target)
@@ -1361,11 +1461,14 @@ class CriticalPass:
       def split_protected(var_set, access_map):
          out = {}
          for var in var_set:
-            unprotected = []
+            unprotected, protected = [], []
             for node in access_map.get(var, []):
-               if not self._is_protected(node):
+               if not self._is_node_protected(node, target):
                   unprotected.append(self._node_loc(node))
+               else:
+                  protected.append(self._node_loc(node))
             out[var] = {"unprotected": unprotected,
+                        "protected": protected,
                         "type": self.model.var_types.get(var),
                         "classification": self._classify_variable(var)}
          return out
@@ -1448,7 +1551,7 @@ class CriticalPass:
       scope = self.model.function_scopes.get(tname)
       for func, nodes in target.calls.items():
          if func not in unprotected_calls:
-               continue
+            continue
 
          receiver = self._get_receiver(func)
 
@@ -1457,10 +1560,10 @@ class CriticalPass:
             continue
 
          for node in nodes:
-               if not self._is_protected(node): 
-                  found_bad_call = True
-                  if self.mode == "verbose":
-                     print(f"      Unprotected call  of {func} in line {node.lineno}")
+            if not self._is_protected(node): 
+               found_bad_call = True
+               if self.mode == "verbose":
+                  print(f"      Unprotected call  of {func} in line {node.lineno}")
 
       return found_bad_call
          
@@ -1477,7 +1580,7 @@ class CriticalPass:
          writers = shared_info["writes"]
 
          for node in readers.get(f"{tname}", []):
-            if not self._is_protected(node):
+            if not self._is_node_protected(node, target):
                var_type = self.model.var_types.get(var)
                match var_type:
                   case "list": kind = "SHARED LIST"
@@ -1502,7 +1605,7 @@ class CriticalPass:
 
          if tname in writers:
             for node in writers.get(tname, []):
-               if not self._is_protected(node):
+               if not self._is_node_protected(node, target):
                   var_type = self.model.var_types.get(var)
                   match var_type:
                      case "list": kind = "SHARED LIST"

@@ -46,7 +46,7 @@ class ProgramModel:
       
       # Data about threads and their accesses
       self.executors: dict[str, set[ast.AST]] = {}
-      self.thread_targets : list[ThreadTarget]= []
+      self.thread_targets : list[ThreadTarget] = []
       self.thread_vars : set[str] = set()
       self.seen_targets : set[str] = set()
       self.thread_start_lines : list[int] = []

@@ -23,6 +23,12 @@ def _unprotected_count(shared_map: dict) -> int:
       len(info.get("unprotected", []))
       for info in shared_map.values()
    )
+   
+def _protected_count(shared_map: dict) -> int:
+    return sum(
+        len(info.get("protected", []))
+        for info in shared_map.values()
+    )
 
 def _repo_key(filepath: str) -> str:
    """Use the top two path components as the repo identifier."""
@@ -67,14 +73,13 @@ def build_summary_rows(data: dict) -> list[dict]:
 
 # ── repo aggregation ──────────────────────────────────────────────────────────
 
-# Fields where 100×mean is a genuine percentage (values are 0 or 1)
 _BINARY_FIELDS = (
    {"unsafe"}
    | {f"viol_{k.lower().replace(' ', '_')}" for k in VIOLATION_KINDS}
 )
 
 def build_repo_rows(data: dict) -> list[dict]:
-   """Collapse file-level summaries into one row per repo (base directory)."""
+   """Collapse file-level summaries into one row per repo"""
    buckets: dict[str, list[dict]] = defaultdict(list)
    for fp, entry in data.items():
       buckets[_repo_key(fp)].append(_file_summary(fp, entry))
@@ -118,8 +123,11 @@ def build_target_rows(data: dict) -> list[dict]:
                "n_shared_read_vars":     len(shared_reads),
                "n_shared_write_vars":    len(shared_writes),
                "n_unprotected_reads":    _unprotected_count(shared_reads),
+               "n_protected_reads":      _protected_count(shared_reads),
                "n_unprotected_writes":   _unprotected_count(shared_writes),
+               "n_protected_writes":     _protected_count(shared_writes),
                "n_unprotected_calls":    sum(len(i.get("unprotected", [])) for i in mutating_calls.values()),
+               "n_protected_calls":      sum(len(i.get("protected", [])) for i in mutating_calls.values()),
                "any_unprotected":        int(
                   _unprotected_count(shared_reads) +
                   _unprotected_count(shared_writes) +
@@ -176,8 +184,10 @@ def print_aggregate(summary_rows: list[dict], repo_rows: list[dict] | None = Non
 
 def main():
    args = sys.argv[1:]
-   if not args:
-      print("Usage: analyze_results.py results.json [--out-dir <dir>] [--by-repo]")
+   if not args or args[0] in ("-h", "--help"):
+      print("Usage: stats.py <input.json> [--out-dir <dir>] [--by-repo]")
+      print("  --out-dir <dir>  Directory to save CSV outputs")
+      print("  --by-repo        Group results by repository")
       sys.exit(1)
 
    json_path  = args[0]
