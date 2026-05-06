@@ -12,7 +12,7 @@ HEADERS = {
     **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}),
 }
 
-OUTPUT_FILE = "threading_repos.txt"
+OUTPUT_FILE = "github_results.txt"
 
 def search_repos(page: int) -> list[dict]:
     """Fetch one page (100 repos) from the GitHub search API."""
@@ -37,7 +37,7 @@ def search_repos(page: int) -> list[dict]:
 
 def main():
     all_urls: list[str] = []
-    total_pages = 10  # 10 × 100 = 1,000 (GitHub's hard cap)
+    total_pages = 10
 
     for page in range(1, total_pages + 1):
         print(f"Fetching page {page}/{total_pages}...")

@@ -2,12 +2,12 @@
 
 # Check if input file is provided
 if [ -z "$1" ]; then
-  echo "Usage: $0 <file_with_github_urls>"
+  echo "Usage: $0 <file_with_github_urls> [target_dir]"
   exit 1
 fi
 
 INPUT_FILE="$1"
-TARGET_DIR="top_1k_repos"
+TARGET_DIR="${2:-top_1k_repos}"
 
 # Create target directory if it doesn't exist
 mkdir -p "$TARGET_DIR"
