@@ -33,13 +33,9 @@ There are 2 main files that drive the parsing pipeline:
 ## Utilities
 Included are utility files (that aren't comprehensive, but can be changed to fit your purposes).
 
-`clone.sh <file> <target>` 
+`clone.sh <file> <target>` takes an input file with Github repos on each line, and a target directory where the repos will be cloned locally.
 
-Takes an input file with Github repos on each line, and a target directory where the repos will be cloned locally.
-
-`puller.py` 
-
-Uses a Github API token provided by the user to call for urls of repos that match the query "language:python threading in:code". This can be changed to get other query results.
+`puller.py` uses a Github API token provided by the user to call for urls of repos that match the query "language:python threading in:code". This can be changed to get other query results.
 
 ## Example usage
 With a directory named `files` in the root directory, run  `python parse.py -s -o results.json files` then run `python stats.py results.json --out-dir summary --by-repo > summary.txt`.
