@@ -5,7 +5,7 @@ Threadparser is a collection of Python scripts that leverages the `ast` library 
 
 ## How to run
 There are 2 main files that drive the parsing pipeline:
-1. `parse.py`, which takes files or directories and outputs json results
+1. `parse.py`, which takes files or directories and outputs json results (verbose output should be redirected to another file)
 2. `stats.py`, which takes json results and provides a summary, mainly for use for large datasets (this should be redirected to another file)
 
 ### `parse.py` Usage
