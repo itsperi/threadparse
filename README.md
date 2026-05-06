@@ -9,32 +9,37 @@ There are 2 main files that drive the parsing pipeline
 2. `stats.py`, which takes json results and provides a summary, mainly for use for large datasets (this should be redirected to another file)
 
 ### `parse.py` Usage
-``` python parse.py [-h | --help] [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>```
+```python parse.py [-h | --help] [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>```
+      
       `-h, --help`                 Outputs this usage information; also outputs if no arguments are provided
+      
       `-v, --verbose`              Enable verbose output; this should be redirected to another file, especially if parsing large datasets
+      
       `-s, --silent`               Enable silent output
+      
       `-o | --output <filename>`   Output results to JSON file
 
-### `stats.py Usage
+### `stats.py1 Usage
 ``` python stats.py <input.json> [--out-dir <dir>] [--by-repo]```
+      
       `<input.json>`               Input JSON from `parse.py`
+      
       `--out-dir <dir>`            Designate a directory to receive CSV output files
+      
       `--by-repo`                  Summary details are printed with data categorized by repo; this should be used for large datasets
 
 ## Utilities
 Included are utility files (that aren't comprehensive, but can be changed to fit your purposes)
 
-`clone.sh <file> <target>` that takes an input file with Github repos on each line, and a target directory where the repos will be cloned locally
+`clone.sh <file> <target>` 
 
-`puller.py` uses a Github API token provided by the user to call for urls of repos that match the query "language:python threading in:code". This can be changed to get other query results
+Takes an input file with Github repos on each line, and a target directory where the repos will be cloned locally
+
+`puller.py` 
+
+Uses a Github API token provided by the user to call for urls of repos that match the query "language:python threading in:code". This can be changed to get other query results
 
 ## Example usage
-With a directory named `files` in the root directory, run 
-
-```python parse.py -s -o results.json files```
-
-then run
-
-```python stats.py results.json --out-dir summary --by-repo > summary.txt```
+With a directory named `files` in the root directory, run  `python parse.py -s -o results.json files` then run `python stats.py results.json --out-dir summary --by-repo > summary.txt`
 
 If you need to examine files more closely, run `parse.py` with the `-v` flag and redirect to your file of choice
