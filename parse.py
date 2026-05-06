@@ -137,26 +137,6 @@ def parse_files(paths: list[str], mode: str | None = None, json_out: str | None 
             print(f"  - {path} [{', '.join(kinds)}]")
       else:
          print("No unsafe threading detected.")
-
-'''
-Takes the repo urls from repos.txt, 
-grabs contents using HTTP requests,
-and runs an analysis on each .py file in the repo
-'''
-# def parse_repos():
-#    with open("repos.txt", "r") as repos:
-#       for url in repos.readlines():
-#          repo = util.GitHubPyGrab(url)
-#          files: dict[str, str] = repo.fetch_all()
-#          print(f"{len(files)} file(s) found in {url}")
-#          for path, program in files.items():
-#             print(f"Parsing {path}...")
-#             tree = util.build_ast_from_program(path, program)
-#             if not tree:
-#                continue
-#             threadcutter = Analyzer(tree)
-#             threadcutter.run()
-#             print("---------------------")
             
 '''
 Command line arguments tell how to run analyses

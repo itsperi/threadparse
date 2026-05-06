@@ -1458,19 +1458,31 @@ class CriticalPass:
       unprotected_calls = self._get_unprotected_calls(target)
 
       # Partition accesses into protected / unprotected
-      def split_protected(var_set, access_map):
+      def split_protected(var_set, access_map, access_type):  # access_type = "reads" or "writes"
          out = {}
+         tname = target.parent_target or target.name
          for var in var_set:
+            shared_info = self.model.shared_vars.get(var)
+            # Fall back to access_map if var isn't in shared_vars (e.g. nonlocal/global only)
+            if shared_info and tname in shared_info[access_type]:
+                  nodes = shared_info[access_type][tname]
+            else:
+                  nodes = access_map.get(var, [])
+
             unprotected, protected = [], []
-            for node in access_map.get(var, []):
-               if not self._is_node_protected(node, target):
-                  unprotected.append(self._node_loc(node))
-               else:
-                  protected.append(self._node_loc(node))
-            out[var] = {"unprotected": unprotected,
-                        "protected": protected,
-                        "type": self.model.var_types.get(var),
-                        "classification": self._classify_variable(var)}
+            for node in nodes:
+                  if not self._is_node_protected(node, target):
+                     unprotected.append(self._node_loc(node))
+                  else:
+                     protected.append(self._node_loc(node))
+
+            out[var] = {
+                  "unprotected":      unprotected,
+                  "protected":        protected,
+                  "type":             self.model.var_types.get(var),
+                  "classification":   self._classify_variable(var),
+            }
+            
          return out
 
       call_locs = {}
@@ -1492,8 +1504,8 @@ class CriticalPass:
          "class":          target.class_name if target.class_name else None,
          "parent_target":  target.parent_target if target.parent_target else None,
          "root_target":    target.root_target,
-         "shared_reads":   split_protected(shared_reads,  target.reads),
-         "shared_writes":  split_protected(shared_writes, target.writes),
+         "shared_reads":   split_protected(shared_reads,  target.reads, "reads"),
+         "shared_writes":  split_protected(shared_writes, target.writes, "writes"),
          "mutating_calls": call_locs,
       }
       
