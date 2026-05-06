@@ -19,7 +19,7 @@ There are 2 main files that drive the parsing pipeline:
       
       -o | --output <filename>   Output results to JSON file
 
-### `stats.py Usage
+### `stats.py` Usage
 ``` python stats.py [-h | --help] <input.json> [--out-dir <dir>] [--by-repo]```
       
       -h | --help                 Outputs this usage information; also outputs if no arguments are provided
