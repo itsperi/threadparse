@@ -2,9 +2,11 @@
 /stats
 /top_1k_repos
 /top_1k_stats
-/first100stats
+/first_100_stats
+/first_1k_stats
 test.py
 __pycache__/
 *.txt
 *.json
+*.csv
 .env
