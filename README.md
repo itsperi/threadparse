@@ -3,13 +3,33 @@
 ## Description
 Threadparser is a collection of Python scripts that leverages the `ast` library in order to parse Python files or directories/repositories containing Python files to detect potentially unsafe multithreaded code.
 
-## How to run
+## How To Run
 There are 2 main files that drive the parsing pipeline:
-1. `parse.py`, which takes files or directories and outputs json results (verbose output should be redirected to another file)
+1. `parse.py`, which takes files or directories and outputs json results (verbose output should be redirected to another file), as well as a text summary of files that were flagged for unsafe thread behavior
 2. `stats.py`, which takes json results and provides a summary, mainly for use for large datasets (this should be redirected to another file)
 
-### `parse.py` Usage
-``` python parse.py [-h | --help] | [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>```
+As well as 2 utilities in the event you need to populate a directory with repos from Github:
+1. `puller.py`, which uses a user provided Github API token in `.env` to request repos that match the query "language:python threading in:code", and produces "github_results.txt", a file containing a list of resultant Python repos from the query, sorted by number of stars, descending. This query can be changed by modifying it within the file, and should first be searched on Github beforehand. The script is limited to 1000 total results with a key.
+2. `clone.sh`, which takes a file containing Github URLs, and locally clones them into a provided directory
+
+Given a directory `<files>` containing Python files that you would like to check for unsafe thread behavior for, run:
+
+``` python parse.py -s -o results.json files ```
+
+This will output `results.json`, which is used as input in the stats.py script as such:
+
+``` python stats.py results.json -o parser_results > summary.txt ```
+
+## Preparation
+If you do not already have a target directory full of Python repos/files you wish to analyze, then you must run:
+
+``` python puller.py -q "your query here" urls.txt``` with a query that should return repositories that include multithreaded Python code on Github.
+
+Then, run ```./clone.sh urls.txt <files>``` to locally clone into a repository to use in the above pipeline
+
+## Usage
+> ### `parse.py`
+#### ``` python parse.py [-h | --help] | [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>```
 
       -h | --help                Outputs this usage information; also outputs if no arguments provided
       
@@ -20,23 +40,30 @@ There are 2 main files that drive the parsing pipeline:
       
       -o | --output <filename>   Output results to JSON file
 
-### `stats.py` Usage
-``` python stats.py [-h | --help] | <input.json> [--out-dir <dir>]```
+> ### `stats.py`
+#### ``` python stats.py [-h | --help] | <input.json> [-o | --out-dir <dir>]```
 
       -h | --help                Outputs this usage information; also outputs if no arguments are provided
       
       <input.json>               Input JSON from `parse.py`
       
-      --out-dir <dir>            Designate a directory to receive CSV output files
+      -o | --out-dir <dir>       Designate a directory to receive CSV output files; default is current directory
 
-## Utilities
-Included are utility files (that aren't comprehensive, but can be changed to fit your purposes).
+> ### `puller.py`
+#### ``` python puller.py [-q | --query] <dest>```
+      -q | --query <search>      Designate a specific search query to the API request
+                                 (Defaults to "language:python threading in:code")
 
-`puller.py` uses a Github API token provided by the user in the root directory's `.env` to call for urls of repos that match the query "language:python threading in:code", and outputs these to "github_results.txt". These can be changed to suit your needs.
+      <dest>                     Designate the file to place URL results into
 
-`clone.sh <file> <target>` takes an input file with Github repos on each line, and a target directory where the repos will be cloned locally.
+> ### `clone.sh`
+#### ``` ./clone.sh <url_file> [target_dir]```
+      <url_file>                 File that contains Github URLs on each line
 
-## Example usage
-With a directory named `files` in the root directory, run  `python parse.py -s -o results.json files` then run `python stats.py results.json --out-dir summary > summary.txt`.
+      target_dir                 Directory to store all cloned repositories
+                                 (Defaults to /clones)
 
-If you need to examine files more closely, run `parse.py` with the `-v` flag and redirect to your file of choice.
+# Disclaimer
+The analysis pipeline makes no assumptions about the Python code it processes, only that if it uses threading, and threads share state, then it will look for unprotected shared access/mutations. 
+
+If any code is flagged, it is up to the user to determine whether the threaded code results in incorrect/unintended behavior

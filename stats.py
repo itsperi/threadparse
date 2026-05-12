@@ -401,7 +401,7 @@ def main():
       print("Usage: python stats.py [-h | --help] | <input.json> [-o | --out-dir <dir>]")
       print("   -h | --help                 Outputs this usage information; warns if no arguments provided")
       print("   <input.json>                JSON file produced by parse.py")
-      print("   -o | --out-dir <filename>   Designate output directory for CSV files (default: current directory)")
+      print("   -o | --out-dir <filename>   Designate output directory for CSV files; default is current directory)")
       sys.exit(0)
 
    json_path = args[0]
