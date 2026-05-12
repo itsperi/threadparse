@@ -149,7 +149,7 @@ def main():
    json_out = None
       
    if not args or args[0] in ("-h", "--help"):
-      print("Usage: python parse.py [-h | --help] | [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>")
+      print("Usage: python parse.py [-h | --help] | [-v | --verbose] [-s | --silent] [-o | --output <filename>] <file_or_dir_paths>")
       print("   -h | --help                Outputs this usage information; also outputs if no arguments are provided")
       print("   -v, --verbose              Enable verbose output")
       print("   -s, --silent               Enable silent output")
