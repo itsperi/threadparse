@@ -45,7 +45,7 @@ class Analyzer:
       import_detection.visit(self.tree)
       if not import_detection.uses_threading:
          return None
-      SymbolPass(self.model).visit(self.tree)
+      SymbolPass(self.model, src=self.model.name).visit(self.tree)
       TypeInferencePass(self.model).visit(self.tree)
       ScopePass(self.model).visit(self.tree)
       ThreadPass(self.model).visit(self.tree)
@@ -109,7 +109,7 @@ def parse_files(paths: list[str], mode: str | None = None, json_out: str | None 
       tree   = util.build_ast_from_filepath(path, mode=mode)
       result = Analyzer(tree, 
                         name=path, 
-                        mode=mode, 
+                        mode=mode,
                         ).run()
       if result is None:
          continue
@@ -147,8 +147,16 @@ def main():
    args = sys.argv[1:]
    mode = None
    json_out = None
+      
+   if not args or args[0] in ("-h", "--help"):
+      print("Usage: python parse.py [-h | --help] | [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>")
+      print("   -h | --help                Outputs this usage information; also outputs if no arguments are provided")
+      print("   -v, --verbose              Enable verbose output")
+      print("   -s, --silent               Enable silent output")
+      print("   -o | --output <filename>   Output results to JSON file")
+      print("   <file_or_dir_paths>        One or more file or directory paths to analyze (directories will be searched recursively for .py files)")
          
-   if len(args) > 1:
+   else:
       if "--verbose" in args or "-v" in args:
          mode = "verbose"
          args = [a for a in args if a not in ("--verbose", "-v")]
@@ -174,14 +182,5 @@ def main():
          
       parse_files(paths, mode=mode, json_out=json_out)
       
-   elif "--help" in args or "-h" in args:
-      print("Usage: python parse.py [-v | --verbose] [-s | --silent] [[-o | --output] <filename>] <file_or_dir_paths>")
-      print("  -v, --verbose       Enable verbose output")
-      print("  -s, --silent        Enable silent output")
-      print("  -o <filename>, --output <filename>   Output results to JSON file")
-      
-   else:
-      print("Invalid command line arguments, use [-h | --help] for usage info")
-
 if __name__ == "__main__":
    main()

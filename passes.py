@@ -61,11 +61,12 @@ class SymbolPass(PCNodeVisitor):
    gathering info about class definitions for later resolution of method calls;
    we also capture rudimentary data about various ways threads are instantiated
    '''
-   def __init__(self, model):
+   def __init__(self, model, src=None):
       self.model = model
       self.current_function = None
       self.current_class = None
-      
+      with open(src, "r") as f:
+         self.model.total_lines = len(f.read().splitlines())      
    # Simply used to update the live class we're visiting
    def visit_ClassDef(self, node):
       previous_class = self.current_class
@@ -1452,6 +1453,18 @@ class CriticalPass:
       # ALL call sites must be protected
       return all(self._is_protected(cs) for cs in call_sites)
  
+   def _count_threaded_lines(self, model) -> int:
+      covered: set[int] = set()
+      for target in model.thread_targets:
+         node = model.functions.get(target.name)
+         if node is None:
+               continue
+         start = getattr(node, "lineno",     None)
+         end   = getattr(node, "end_lineno", None)
+         if start is not None and end is not None:
+               covered.update(range(start, end + 1))
+      return len(covered)
+
    def _serialize_target(self, target: ThreadTarget) -> dict:
       scope = self.model.function_scopes.get(target.name)
       shared_reads, shared_writes = self._get_shared_accesses(target)
@@ -1511,10 +1524,12 @@ class CriticalPass:
       
    def to_json(self, violations: set[str], found_bad_call: bool) -> dict:
       return {
-         "unsafe":       bool(violations) or found_bad_call,
-         "violations":   sorted(violations),
-         "shared_vars":  self._serialize_shared_vars(),
-         "thread_targets": [self._serialize_target(t) for t in self.model.thread_targets],
+         "unsafe":          bool(violations) or found_bad_call,
+         "violations":      sorted(violations),
+         "total_lines":     self.model.total_lines,
+         "threaded_lines":  self._count_threaded_lines(self.model),
+         "shared_vars":     self._serialize_shared_vars(),
+         "thread_targets":  [self._serialize_target(t) for t in self.model.thread_targets],
       }
    
    def _get_unprotected_calls(self, target) -> set[str]:
@@ -1635,8 +1650,9 @@ class CriticalPass:
  
    def analyze_shared_vars(self) -> dict: # json
       if not self.model.thread_targets:
-         return {"program": self.model.name, "unsafe": False,
-                "violations": [], "shared_vars": {}, "thread_targets": []}
+         return {"unsafe": False, "violations": [], 
+                 "total_lines": 0, "threaded_lines": 0,
+                 "shared_vars": {}, "thread_targets": []}
 
       if self.mode == "verbose":
          print(f"\nAnalyzing threads in program: {self.model.name}")

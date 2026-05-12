@@ -26,6 +26,7 @@ class ProgramModel:
    def __init__(self, name=""):
       # Data about the program as a whole
       self.name: str = name
+      self.total_lines: int = 0
       self.globals : dict[str, ast.AST] = {}
       self.nonlocals : dict[str, ast.AST] = {}
       self.module_vars : dict[str, ast.AST] = {}
