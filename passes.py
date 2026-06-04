@@ -53,6 +53,8 @@ class ImportDetection(ast.NodeVisitor):
             return
       self.generic_visit(node)
             
+COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
+QUEUE_TYPES = {"Queue", "SimpleQueue", "LifoQueue", "PriorityQueue"}
 class SymbolPass(PCNodeVisitor):
    '''
    This pass of the AST is meant to gather the names and locations
@@ -175,9 +177,9 @@ class SymbolPass(PCNodeVisitor):
                   
          # We also capture Queue instantiations since they are thread-safe
          is_queue = (
-            isinstance(func, ast.Name) and func.id in {"Queue", "SimpleQueue", "PriorityQueue"}
+            isinstance(func, ast.Name) and func.id in QUEUE_TYPES
          ) or (
-            isinstance(func, ast.Attribute) and func.attr in {"Queue", "SimpleQueue", "PriorityQueue"}
+            isinstance(func, ast.Attribute) and func.attr in QUEUE_TYPES
          )
          if is_queue:
             type_name = func.id if isinstance(func, ast.Name) else func.attr
@@ -238,8 +240,6 @@ class SymbolPass(PCNodeVisitor):
       else:
          return False
 
-COLLECTION_CONSTRUCTORS = {"list", "dict", "set", "defaultdict", "OrderedDict", "Counter"}
-QUEUE_TYPES = {"Queue", "SimpleQueue", "PriorityQueue"}
 class TypeInferencePass(PCNodeVisitor):
    '''
    This pass of the AST is meant to gather types of
@@ -723,6 +723,15 @@ class ThreadExpansion:
                                root_target=root_target)
                )                    
 
+# Queue methods from the 'queue' library
+QUEUE_METHODS = {
+   "put", "put_nowait",
+   "get", "get_nowait",
+   "task_done",
+   "join",
+   "empty", "full", "qsize",      
+}
+
 # We only care about list, set, and dict mutations
 MUTATING_METHODS = {
    "append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", 
@@ -748,6 +757,7 @@ class TargetPass(PCNodeVisitor):
       self.reads = defaultdict(list)
       self.writes = defaultdict(list)
       self.calls = defaultdict(list)
+      self.queue_accesses: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
       
    # For attribute accesses, we need to 
    # extract the entire chain: class.list.append()
@@ -853,7 +863,7 @@ class TargetPass(PCNodeVisitor):
       
       if isinstance(node.func, ast.Name):
          func_name = node.func.id
-         if func_name in MUTATING_METHODS:
+         if func_name in MUTATING_METHODS | QUEUE_METHODS:
             self.calls[func_name].append(node)
 
       elif isinstance(node.func, ast.Attribute):
@@ -864,9 +874,8 @@ class TargetPass(PCNodeVisitor):
          obj = node.func.value
 
          # Record method calls that mutate, 
-         # but filter out mutations to known 
-         # thread-safe queue types and collections 
-         # that are locally defined within the function
+         # but filter out collections that 
+         # are locally defined within the function
          if method in MUTATING_METHODS:
             if isinstance(obj, ast.Name):
                obj_type = self.var_types.get(obj.id)
@@ -889,6 +898,31 @@ class TargetPass(PCNodeVisitor):
                   else:
                      self.calls[full_obj + "." + method].append(node)
                      self.writes[full_obj].append(node)
+
+         # Store queue accesses specifically
+         if method in QUEUE_METHODS:
+            if isinstance(obj, ast.Name):
+               obj_type = self.var_types.get(obj.id)
+               if obj_type in QUEUE_TYPES:
+                     if method in {"get", "get_nowait"}:
+                        self.writes[obj.id].append(node)
+                     else:
+                        self.reads[obj.id].append(node)
+
+            elif isinstance(obj, ast.Attribute):
+               full_obj = self.get_full_attr_name(obj)
+               if full_obj and full_obj.startswith("self.") and self.class_name:
+                     full_obj = f"{self.class_name}.{full_obj[5:]}"
+               if full_obj:
+                     obj_root = ".".join(full_obj.split(".")[:2])
+                     resolved = (full_obj if self.var_types.get(full_obj) in QUEUE_TYPES
+                                 else obj_root if self.var_types.get(obj_root) in QUEUE_TYPES
+                                 else None)
+                     if resolved:
+                        if method in {"get", "get_nowait"}:
+                           self.writes[resolved].append(node)
+                        else:
+                           self.reads[resolved].append(node)
 
       self.generic_visit(node)
       
@@ -985,6 +1019,7 @@ class TargetUpdate:
          target.reads = parser.reads
          target.writes = parser.writes
          target.calls = parser.calls
+         target.queue_accesses = parser.queue_accesses
 
 class ClassResolutionPass(PCNodeVisitor):
    '''
@@ -1520,6 +1555,13 @@ class CriticalPass:
          "shared_reads":   split_protected(shared_reads,  target.reads, "reads"),
          "shared_writes":  split_protected(shared_writes, target.writes, "writes"),
          "mutating_calls": call_locs,
+         "queue_accesses": {
+            var: {
+               method: [self._node_loc(n) for n in nodes]
+               for method, nodes in methods.items()
+            }
+            for var, methods in getattr(target, "queue_accesses", {}).items()
+         },
       }
       
    def to_json(self, violations: set[str], found_bad_call: bool) -> dict:

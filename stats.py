@@ -4,7 +4,8 @@ from collections import defaultdict
 # ── constants ─────────────────────────────────────────────────────────────────
 
 VIOLATION_KINDS = ["SHARED LIST", "SHARED DICT", "SHARED SET", "SC"]
-VAR_TYPES       = ["list", "dict", "set"]
+VAR_TYPES       = ["list", "dict", "set", "queue"]
+QUEUE_TYPES     = {"Queue", "SimpleQueue", "LifoQueue", "PriorityQueue"}
 CLASSIFICATIONS = ["GLOBAL", "NONLOCAL", "CROSS_THREAD", "MAIN_SCOPE", "CLASS_ATTR", "OTHER"]
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -23,8 +24,12 @@ def _repo_key(filepath: str) -> str:
 def _pct(num, den):
    return f"{100 * num / den:.1f}%" if den else "—"
 
-# ── per-file summary ──────────────────────────────────────────────────────────
+def _normalize_q_type(t):
+   if t in QUEUE_TYPES:
+      return "queue"
+   return t or "unknown"
 
+# ── per-file summary ──────────────────────────────────────────────────────────
 def _file_summary(filepath: str, entry: dict) -> dict:
    detail     = entry.get("detail") or {}
    shared     = detail.get("shared_vars", {})
@@ -40,7 +45,7 @@ def _file_summary(filepath: str, entry: dict) -> dict:
    type_counts  = defaultdict(int)
    class_counts = defaultdict(int)
    for v in shared.values():
-      type_counts[v.get("type") or "unknown"] += 1
+      type_counts[_normalize_q_type(v.get("type"))] += 1
       class_counts[v.get("classification", "OTHER")] += 1
 
    # --- violation frequency ---
