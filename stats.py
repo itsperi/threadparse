@@ -330,42 +330,48 @@ def print_aggregate(summary_rows: list[dict], repo_rows: list[dict] | None = Non
 
    # Main per-repo table
    print(
-      f"  {'Repo':<{col_w}} {'Files':>5} {'Unsafe':>6} "
-      f"{'RiskyThr':>8} {'TotLines':>9} {'ThrdLines':>10} "
-      f"{'Thrd%':>6} {'Unprotected':>11} {'Violations':>10}"
+      f"  {'Repo':<{col_w}} {'Files':>5} {'Unsafe':>6}  {'(%)':>7} "
+      f"{'RiskyThr':>8}  {'(%)':>7} "
+      f"{'TotLines':>9} {'ThrdLines':>10}  {'Thrd%':>6} "
+      f"{'Unprotected':>11} {'Violations':>10}"
    )
-   sep = (f"  {'-'*col_w} {'-----':>5} {'------':>6} {'--------':>8} "
-         f"{'--------':>9} {'---------':>10} {'-----':>6} "
-         f"{'----------':>11} {'----------':>10}")
+   sep = (
+      f"  {'-'*col_w} {'-----':>5} {'------':>6}  {'-------':>7} "
+      f"{'--------':>8}  {'-------':>7} "
+      f"{'--------':>9} {'---------':>10}  {'------':>6} "
+      f"{'----------':>11} {'----------':>10}"
+   )
    print(sep)
 
    for r in sorted(repo_rows, key=lambda x: x["sum_unsafe"], reverse=True):
       print(
          f"  {dn(r['repo']):<{col_w}} "
          f"{r['n_files']:>5} "
-         f"{r['sum_unsafe']:>6} "
-         f"{r['sum_n_risky_threads']:>8} "
+         f"{r['sum_unsafe']:>6}  {'':>7} "
+         f"{r['sum_n_risky_threads']:>8}  {'':>7} "
          f"{r['sum_total_lines']:>9,} "
-         f"{r['sum_threaded_lines']:>10,} "
-         f"{r['repo_threaded_lines_pct']:>5.1f}% "
+         f"{r['sum_threaded_lines']:>10,}  {'':>6} "
          f"{r['sum_total_unprotected']:>11} "
          f"{r['sum_total_violations']:>10}"
       )
-
    print(sep)
-   tf   = sum(r["n_files"]                  for r in repo_rows)
-   tu   = sum(r["sum_unsafe"]               for r in repo_rows)
-   trt  = sum(r["sum_n_risky_threads"]      for r in repo_rows)
-   ttl  = sum(r["sum_total_lines"]          for r in repo_rows)
-   tthr = sum(r["sum_threaded_lines"]       for r in repo_rows)
-   tunp = sum(r["sum_total_unprotected"]    for r in repo_rows)
-   tv   = sum(r["sum_total_violations"]     for r in repo_rows)
+   tf      = sum(r["n_files"]               for r in repo_rows)
+   tu      = sum(r["sum_unsafe"]            for r in repo_rows)
+   trt     = sum(r["sum_n_risky_threads"]   for r in repo_rows)
+   ttl     = sum(r["sum_total_lines"]       for r in repo_rows)
+   tthr    = sum(r["sum_threaded_lines"]    for r in repo_rows)
+   tunp    = sum(r["sum_total_unprotected"] for r in repo_rows)
+   tv      = sum(r["sum_total_violations"]  for r in repo_rows)
    thr_pct = round(100 * tthr / ttl, 1) if ttl else 0.0
    print(
-      f"  {'TOTAL':<{col_w}} {tf:>5} {tu:>6} ({_pct(tu,tf)}) "
-      f"{trt:>8} ({_pct(trt,n_threads)}) "
-      f"{ttl:>9,} {tthr:>10,} {thr_pct:>5.1f}% "
-      f"{tunp:>11} {tv:>10}"
+      f"  {'TOTAL':<{col_w}} "
+      f"{tf:>5} "
+      f"{tu:>6}  {_pct(tu,  tf):>7} "
+      f"{trt:>8}  {_pct(trt, n_threads):>7} "
+      f"{ttl:>9,} "
+      f"{tthr:>10,}  {thr_pct:>5.1f}% "
+      f"{tunp:>11} "
+      f"{tv:>10}"
    )
 
    # Violation breakdown × repo
@@ -380,7 +386,7 @@ def print_aggregate(summary_rows: list[dict], repo_rows: list[dict] | None = Non
    kind_totals = [sum(r.get(f"sum_{c}", 0) for r in repo_rows) for c in viol_cols]
    grand_viol  = sum(kind_totals)
    print(f"  {'TOTAL':<{col_w}} " +
-         "  ".join(f"{t:>11} {_pct(t, grand_viol):>3}" for t in kind_totals))
+         "  ".join(f"{t:>8} ({_pct(t, grand_viol):>3})" for t in kind_totals))
 
    # Classification breakdown × repo
    hdr("CLASSIFICATION BREAKDOWN × REPO")
@@ -394,7 +400,22 @@ def print_aggregate(summary_rows: list[dict], repo_rows: list[dict] | None = Non
    cls_totals     = [sum(r.get(f"sum_{c}", 0) for r in repo_rows) for c in cls_cols]
    grand_cls      = sum(cls_totals)
    print(f"  {'TOTAL':<{col_w}} " +
-         "  ".join(f"{t:>7} {_pct(t, grand_cls):>3}" for t in cls_totals))
+         "  ".join(f"{t:>4} ({_pct(t, grand_cls):>3})" for t in cls_totals))
+   
+      # Variable type breakdown × repo
+   hdr("SHARED VAR TYPE BREAKDOWN × REPO")
+   type_cols = [f"shared_{t}s" for t in VAR_TYPES] + ["shared_other"]
+   type_labels = VAR_TYPES + ["other"]
+   print(f"  {'Repo':<{col_w}} " + "  ".join(f"{t:>10}" for t in type_labels))
+   print(f"  {'-'*col_w} " + "  ".join(f"{'------':>10}" for _ in type_labels))
+   for r in sorted(repo_rows, key=lambda x: x["sum_n_shared_vars"], reverse=True):
+       vals = "  ".join(f"{r.get(f'sum_{c}', 0):>10}" for c in type_cols)
+       print(f"  {dn(r['repo']):<{col_w}} {vals}")
+   print(f"  {'-'*col_w} " + "  ".join(f"{'------':>10}" for _ in type_labels))
+   type_totals = [sum(r.get(f"sum_{c}", 0) for r in repo_rows) for c in type_cols]
+   grand_type  = sum(type_totals)
+   print(f"  {'TOTAL':<{col_w}} " +
+         "  ".join(f"{t:>4} ({_pct(t, grand_type):>3})" for t in type_totals))
 
    print(f"\n  {'═'*W}\n")
 
